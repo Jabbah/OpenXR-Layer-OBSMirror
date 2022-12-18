@@ -1,6 +1,6 @@
 # OpenXR OBS Mirror
 
-An OpenXR API Layer to mirror what you see in VR to OBS.
+An OpenXR API Layer to mirror what you see in VR to OBS. (Currently DX11 support only)
 
 OpenXR Layer API template was used as the basis for this and can be found here:
 https://github.com/mbucchia/OpenXR-Layer-Template
