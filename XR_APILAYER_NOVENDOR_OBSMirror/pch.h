@@ -47,9 +47,14 @@ using namespace std::chrono_literals;
 
 using Microsoft::WRL::ComPtr;
 
+// Graphics APIs.
+#include <d3d11.h>
+#include <dxgi.h>
+
 // OpenXR + Windows-specific definitions.
 #define XR_NO_PROTOTYPES
 #define XR_USE_PLATFORM_WIN32
+#define XR_USE_GRAPHICS_API_D3D11
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
 
