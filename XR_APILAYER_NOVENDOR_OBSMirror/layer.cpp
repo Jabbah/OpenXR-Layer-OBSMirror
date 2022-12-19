@@ -828,6 +828,7 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
             while (entry) {
                 Log("Entry: %d\n", entry->type);
                 if (entry->type == XR_TYPE_GRAPHICS_BINDING_D3D11_KHR) {
+                    _xrGraphicsAPI = XR_TYPE_GRAPHICS_BINDING_D3D11_KHR;
                     const XrGraphicsBindingD3D11KHR* d3d11Bindings =
                         reinterpret_cast<const XrGraphicsBindingD3D11KHR*>(entry);
                     _d3d11Device.copy_from(d3d11Bindings->device);
@@ -842,6 +843,8 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
                     if (!_graphicsRequirementQueried) {
                         // return XR_ERROR_GRAPHICS_REQUIREMENTS_CALL_MISSING;
                     }
+                } else {
+                    _xrGraphicsAPI = XR_TYPE_UNKNOWN;
                 }
 
                 entry = entry->next;
@@ -987,40 +990,41 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
             const XrResult result =
                 OpenXrApi::xrEnumerateSwapchainImages(swapchain, imageCapacityInput, imageCountOutput, images);
             if (XR_SUCCEEDED(result)) {
-                swapchainState._surfaceImages.resize(*imageCountOutput);
-                for (int i = 0; i < *imageCountOutput; ++i) {
-                    swapchainState._surfaceImages[i] = reinterpret_cast<XrSwapchainImageD3D11KHR*>(images)[i];
-                }
-                images = reinterpret_cast<XrSwapchainImageBaseHeader*>(swapchainState._surfaceImages.data());
-                if (swapchainState._lastTexture) {
-                    D3D11_TEXTURE2D_DESC srcDesc;
-                    swapchainState._lastTexture->GetDesc(&srcDesc);
-                    if (srcDesc.Width != swapchainState._createInfo.width ||
-                        srcDesc.Height != swapchainState._createInfo.height ||
-                        srcDesc.Format != (DXGI_FORMAT)swapchainState._createInfo.format) {
-                        swapchainState._lastTexture = nullptr;
+                if (_mirror && _xrGraphicsAPI == XR_TYPE_GRAPHICS_BINDING_D3D11_KHR) {
+                    swapchainState._surfaceImages.resize(*imageCountOutput);
+                    for (int i = 0; i < *imageCountOutput; ++i) {
+                        swapchainState._surfaceImages[i] = reinterpret_cast<XrSwapchainImageD3D11KHR*>(images)[i];
+                    }
+                    images = reinterpret_cast<XrSwapchainImageBaseHeader*>(swapchainState._surfaceImages.data());
+                    if (swapchainState._lastTexture) {
+                        D3D11_TEXTURE2D_DESC srcDesc;
+                        swapchainState._lastTexture->GetDesc(&srcDesc);
+                        if (srcDesc.Width != swapchainState._createInfo.width ||
+                            srcDesc.Height != swapchainState._createInfo.height ||
+                            srcDesc.Format != (DXGI_FORMAT)swapchainState._createInfo.format) {
+                            swapchainState._lastTexture = nullptr;
+                        }
+                    }
+                    if (swapchainState._lastTexture == nullptr) {
+                        D3D11_TEXTURE2D_DESC desc;
+                        ZeroMemory(&desc, sizeof(desc));
+                        desc.Width = swapchainState._createInfo.width;
+                        desc.Height = swapchainState._createInfo.height;
+                        desc.MipLevels = 1;
+                        desc.ArraySize = 1;
+                        desc.Format = (DXGI_FORMAT)swapchainState._createInfo.format;
+                        desc.SampleDesc.Count = 1;
+                        desc.SampleDesc.Quality = 0;
+                        desc.Usage = D3D11_USAGE_DEFAULT;
+                        desc.CPUAccessFlags = 0;
+                        desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
+                        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+                        CHECK_DX(_d3d11Device->CreateTexture2D(&desc, NULL, swapchainState._lastTexture.put()));
+
+                        _mirror->createSharedMirrorTexture(swapchain, swapchainState._lastTexture);
                     }
                 }
-                if (swapchainState._lastTexture == nullptr) {
-                    D3D11_TEXTURE2D_DESC desc;
-                    ZeroMemory(&desc, sizeof(desc));
-                    desc.Width = swapchainState._createInfo.width;
-                    desc.Height = swapchainState._createInfo.height;
-                    desc.MipLevels = 1;
-                    desc.ArraySize = 1;
-                    desc.Format = (DXGI_FORMAT)swapchainState._createInfo.format;
-                    desc.SampleDesc.Count = 1;
-                    desc.SampleDesc.Quality = 0;
-                    desc.Usage = D3D11_USAGE_DEFAULT;
-                    desc.CPUAccessFlags = 0;
-                    desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
-                    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-
-                    CHECK_DX(_d3d11Device->CreateTexture2D(&desc, NULL, swapchainState._lastTexture.put()));
-
-                    _mirror->createSharedMirrorTexture(swapchain, swapchainState._lastTexture);
-                }
-
             } else {
                 swapchainState._surfaceImages.clear();
             }
@@ -1046,10 +1050,14 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
 
         XrResult xrReleaseSwapchainImage(XrSwapchain swapchain,
                                          const XrSwapchainImageReleaseInfo* releaseInfo) override {
-            if (_mirror->enabled() && isSwapchainHandled(swapchain)) {
+            if (_mirror && _mirror->enabled() && isSwapchainHandled(swapchain)) {
                 auto& swapchainState = _swapchains[swapchain];
-                auto* textPtr = swapchainState._surfaceImages[swapchainState._aquiredIndex].texture;
-                _d3d11Context->CopyResource(swapchainState._lastTexture.get(), textPtr);
+                if (!swapchainState._surfaceImages.empty()) {
+                    auto* textPtr = swapchainState._surfaceImages[swapchainState._aquiredIndex].texture;
+                    if (_xrGraphicsAPI == XR_TYPE_GRAPHICS_BINDING_D3D11_KHR) {
+                        _d3d11Context->CopyResource(swapchainState._lastTexture.get(), textPtr);
+                    }
+                }
             }
             const XrResult result = OpenXrApi::xrReleaseSwapchainImage(swapchain, releaseInfo);
             return result;
@@ -1064,7 +1072,7 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
             XrResult res =
                 OpenXrApi::xrLocateViews(session, viewLocateInfo, viewState, viewCapacityInput, viewCountOutput, views);
 
-            if (_mirror->enabled() && XR_SUCCEEDED(res)) {
+            if (_mirror && _mirror->enabled() && XR_SUCCEEDED(res)) {
                 auto siPtr = _mirror->getSpaceInfo(viewLocateInfo->space);
                 if (siPtr && siPtr->referenceSpaceType == XR_REFERENCE_SPACE_TYPE_LOCAL) {
                     if (_projectionViews.size() != *viewCountOutput)
@@ -1096,14 +1104,15 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
                                         const XrReferenceSpaceCreateInfo* createInfo,
                                         XrSpace* space) {
             XrResult res = OpenXrApi::xrCreateReferenceSpace(session, createInfo, space);
-            if (XR_SUCCEEDED(res)) {
+            if (_mirror && XR_SUCCEEDED(res)) {
                 _mirror->addSpace(*space, createInfo);
             }
             return res;
         }
 
         XrResult xrBeginFrame(XrSession session, const XrFrameBeginInfo* frameBeginInfo) override {
-            _mirror->flush();
+            if (_mirror)
+                _mirror->flush();
             return OpenXrApi::xrBeginFrame(session, frameBeginInfo);
         }
 
@@ -1112,50 +1121,55 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
                 return XR_ERROR_VALIDATION_FAILURE;
             }
 
-            _mirror->checkOBSRunning();
+            if (_mirror) {
+                _mirror->checkOBSRunning();
 
-            if (_mirror->enabled() && isSessionHandled(session) && !_projectionViews.empty() && !_xrViewsList.empty()) {
-                auto& sessionState = _sessions[session];
-                const XrCompositionLayerProjectionView* projView = &_projectionViews[0];
-                _projectionViews[0].subImage.imageRect.offset.x = 0;
-                _projectionViews[0].subImage.imageRect.offset.y = 0;
-                _projectionViews[0].subImage.imageRect.extent.width = _xrViewsList[0].recommendedImageRectWidth;
-                _projectionViews[0].subImage.imageRect.extent.height = _xrViewsList[0].recommendedImageRectHeight;
+                if (_mirror->enabled() && isSessionHandled(session) && !_projectionViews.empty() &&
+                    !_xrViewsList.empty()) {
+                    auto& sessionState = _sessions[session];
+                    const XrCompositionLayerProjectionView* projView = &_projectionViews[0];
+                    _projectionViews[0].subImage.imageRect.offset.x = 0;
+                    _projectionViews[0].subImage.imageRect.offset.y = 0;
+                    _projectionViews[0].subImage.imageRect.extent.width = _xrViewsList[0].recommendedImageRectWidth;
+                    _projectionViews[0].subImage.imageRect.extent.height = _xrViewsList[0].recommendedImageRectHeight;
 
-                //_projectionViews[0].pose.orientation = XrQuaternionf{0, 0, 0, 1};
-                //_projectionViews[0].pose.position = XrVector3f{0, 0.25, 0.25};
+                    //_projectionViews[0].pose.orientation = XrQuaternionf{0, 0, 0, 1};
+                    //_projectionViews[0].pose.position = XrVector3f{0, 0.25, 0.25};
 
-                uint32_t count = frameEndInfo->layerCount;
-                for (uint32_t i = 0; i < count; ++i) {
-                    const XrCompositionLayerBaseHeader* hdr = frameEndInfo->layers[i];
-                    if (hdr->type == XR_TYPE_COMPOSITION_LAYER_PROJECTION) {
-                        const XrCompositionLayerProjection* projLayer =
-                            reinterpret_cast<const XrCompositionLayerProjection*>(hdr);
-                        if (projLayer->viewCount == 2) {
-                            projView = &projLayer->views[0];
-                            if (isSwapchainHandled(projView->subImage.swapchain)) {
-                                auto& swapchainState = _swapchains[projView->subImage.swapchain];
-                                if (swapchainState._lastTexture && !swapchainState._surfaceImages.empty()) {
-                                    _mirror->copyPerspectiveTex(projView->subImage.imageRect.extent.width,
-                                                                projView->subImage.imageRect.extent.height,
-                                                                (DXGI_FORMAT)swapchainState._createInfo.format,
-                                                                projView->subImage.swapchain);
+                    uint32_t count = frameEndInfo->layerCount;
+                    for (uint32_t i = 0; i < count; ++i) {
+                        const XrCompositionLayerBaseHeader* hdr = frameEndInfo->layers[i];
+                        if (hdr->type == XR_TYPE_COMPOSITION_LAYER_PROJECTION) {
+                            const XrCompositionLayerProjection* projLayer =
+                                reinterpret_cast<const XrCompositionLayerProjection*>(hdr);
+                            if (projLayer->viewCount == 2) {
+                                projView = &projLayer->views[0];
+                                if (isSwapchainHandled(projView->subImage.swapchain)) {
+                                    auto& swapchainState = _swapchains[projView->subImage.swapchain];
+                                    if (swapchainState._lastTexture && !swapchainState._surfaceImages.empty()) {
+                                        _mirror->copyPerspectiveTex(projView->subImage.imageRect.extent.width,
+                                                                    projView->subImage.imageRect.extent.height,
+                                                                    (DXGI_FORMAT)swapchainState._createInfo.format,
+                                                                    projView->subImage.swapchain);
+                                    }
                                 }
                             }
-                        }
-                    } else if (hdr->type == XR_TYPE_COMPOSITION_LAYER_QUAD) {
-                        const XrCompositionLayerQuad* quadLayer = reinterpret_cast<const XrCompositionLayerQuad*>(hdr);
-                        if (isSwapchainHandled(quadLayer->subImage.swapchain)) {
-                            auto& swapchainState = _swapchains[quadLayer->subImage.swapchain];
-                            if (swapchainState._lastTexture && !swapchainState._surfaceImages.empty()) {
-                                if (projView) {
-                                    _mirror->Blend(projView, quadLayer, (DXGI_FORMAT)swapchainState._createInfo.format);
+                        } else if (hdr->type == XR_TYPE_COMPOSITION_LAYER_QUAD) {
+                            const XrCompositionLayerQuad* quadLayer =
+                                reinterpret_cast<const XrCompositionLayerQuad*>(hdr);
+                            if (isSwapchainHandled(quadLayer->subImage.swapchain)) {
+                                auto& swapchainState = _swapchains[quadLayer->subImage.swapchain];
+                                if (swapchainState._lastTexture && !swapchainState._surfaceImages.empty()) {
+                                    if (projView) {
+                                        _mirror->Blend(
+                                            projView, quadLayer, (DXGI_FORMAT)swapchainState._createInfo.format);
+                                    }
                                 }
                             }
                         }
                     }
+                    _mirror->copyToMIrror();
                 }
-                _mirror->copyToMIrror();
             }
 
             return OpenXrApi::xrEndFrame(session, frameEndInfo);
@@ -1192,6 +1206,8 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
         bool isSwapchainHandled(XrSwapchain swapchain) const {
             return _swapchains.find(swapchain) != _swapchains.cend();
         }
+
+        XrStructureType _xrGraphicsAPI = XR_TYPE_UNKNOWN;
 
         winrt::com_ptr<ID3D11Device> _d3d11Device = nullptr;
         winrt::com_ptr<ID3D11DeviceContext> _d3d11Context = nullptr;
