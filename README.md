@@ -10,7 +10,7 @@ https://github.com/mbucchia/OpenXR-Layer-Template
 ## Install the OpenXR Layer
 Get the latest release from the releases section on the right.
 
-Extract the files to a folder in Program Files e.g. C:\Program Files\OpenXR-OBSMirror\v0.1.0\
+Extract the files to a folder in Program Files e.g. C:\Program Files\OpenXR-OBSMirror\
 
 To install the OpenXR Layer right click on Install-Layer.ps1 and select "Run with PowerShell"
 
