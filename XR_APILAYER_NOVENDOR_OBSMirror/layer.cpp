@@ -32,14 +32,17 @@
 #include <d3dcompiler.h> // For compiling shaders! D3DCompile
 #include <winrt/base.h>
 
+#include <d3d11_1.h>
+
 #pragma comment(lib, "d3dcompiler.lib")
 #pragma comment(lib, "d3d11.lib")
+#pragma comment(lib, "d3d12.lib")
 
 #define CHECK_DX(expression)                                                                                           \
     do {                                                                                                               \
         HRESULT res = (expression);                                                                                    \
         if (FAILED(res)) {                                                                                             \
-            Log("DX Call failed with: 0x%08x", res);                                                                   \
+            Log("DX Call failed with: 0x%08x\n", res);                                                                 \
             Log("CHECK_DX failed on: " #expression, " DirectX error - see log for details\n");                         \
         }                                                                                                              \
     } while (0);
@@ -269,18 +272,24 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
       public:
         D3D11Mirror() {
             HRESULT hr;
-            D3D_FEATURE_LEVEL featureLevel;
+            D3D_FEATURE_LEVEL featureLevel[] = {
+                D3D_FEATURE_LEVEL_11_1, 
+                D3D_FEATURE_LEVEL_11_0
+            };
+            
             hr = D3D11CreateDevice(NULL,
                                    D3D_DRIVER_TYPE_HARDWARE,
                                    0,
-                                   // D3D11_CREATE_DEVICE_DEBUG |
+#ifdef _DEBUG
+                                   D3D11_CREATE_DEVICE_DEBUG |
+#endif
                                    D3D11_CREATE_DEVICE_BGRA_SUPPORT,
                                    0,
                                    0,
                                    D3D11_SDK_VERSION,
-                                   _d3d11MirrorDevice.put(),
-                                   &featureLevel,
-                                   _d3d11MirrorContext.put());
+                                   _d3d11MirrorDevice.ReleaseAndGetAddressOf(),
+                                   featureLevel,
+                                   _d3d11MirrorContext.ReleaseAndGetAddressOf());
             if (FAILED(hr)) {
                 Log("init: D3D11CreateDevice failed\n");
                 return;
@@ -290,10 +299,14 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
 
             ID3DBlob* vShaderBlob = d3d_compile_shader(quad_shader_code, "vs_quad", "vs_5_0");
             ID3DBlob* pShaderBlob = d3d_compile_shader(quad_shader_code, "ps_quad", "ps_5_0");
-            CHECK_DX(_d3d11MirrorDevice->CreateVertexShader(
-                vShaderBlob->GetBufferPointer(), vShaderBlob->GetBufferSize(), nullptr, _quadVShader.put()));
-            CHECK_DX(_d3d11MirrorDevice->CreatePixelShader(
-                pShaderBlob->GetBufferPointer(), pShaderBlob->GetBufferSize(), nullptr, _quadPShader.put()));
+            CHECK_DX(_d3d11MirrorDevice->CreateVertexShader(vShaderBlob->GetBufferPointer(),
+                                                            vShaderBlob->GetBufferSize(),
+                                                            nullptr,
+                                                            _quadVShader.ReleaseAndGetAddressOf()));
+            CHECK_DX(_d3d11MirrorDevice->CreatePixelShader(pShaderBlob->GetBufferPointer(),
+                                                           pShaderBlob->GetBufferSize(),
+                                                           nullptr,
+                                                           _quadPShader.ReleaseAndGetAddressOf()));
 
             D3D11_INPUT_ELEMENT_DESC q_vert_desc[] = {
                 {"POSITION",
@@ -315,7 +328,7 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
                                                            (UINT)_countof(q_vert_desc),
                                                            vShaderBlob->GetBufferPointer(),
                                                            vShaderBlob->GetBufferSize(),
-                                                           _quadShaderLayout.put()));
+                                                           _quadShaderLayout.ReleaseAndGetAddressOf()));
 
             D3D11_SUBRESOURCE_DATA qVertBufferData = {quad_verts};
             D3D11_SUBRESOURCE_DATA qIndBufferData = {quad_inds};
@@ -323,9 +336,12 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
                 sizeof(quad_verts), D3D11_BIND_VERTEX_BUFFER, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE);
             CD3D11_BUFFER_DESC qIndBufferDesc(sizeof(quad_inds), D3D11_BIND_INDEX_BUFFER);
             CD3D11_BUFFER_DESC qConstBufferDesc(sizeof(quad_transform_buffer_t), D3D11_BIND_CONSTANT_BUFFER);
-            CHECK_DX(_d3d11MirrorDevice->CreateBuffer(&qVertBufferDesc, &qVertBufferData, _quadVertexBuffer.put()));
-            CHECK_DX(_d3d11MirrorDevice->CreateBuffer(&qIndBufferDesc, &qIndBufferData, _quadIndexBuffer.put()));
-            CHECK_DX(_d3d11MirrorDevice->CreateBuffer(&qConstBufferDesc, nullptr, _quadConstantBuffer.put()));
+            CHECK_DX(_d3d11MirrorDevice->CreateBuffer(
+                &qVertBufferDesc, &qVertBufferData, _quadVertexBuffer.ReleaseAndGetAddressOf()));
+            CHECK_DX(_d3d11MirrorDevice->CreateBuffer(
+                &qIndBufferDesc, &qIndBufferData, _quadIndexBuffer.ReleaseAndGetAddressOf()));
+            CHECK_DX(_d3d11MirrorDevice->CreateBuffer(
+                &qConstBufferDesc, nullptr, _quadConstantBuffer.ReleaseAndGetAddressOf()));
 
             // Create a texture sampler state description.
             D3D11_SAMPLER_DESC samplerDesc;
@@ -344,7 +360,7 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
             samplerDesc.MaxLOD = FLT_MAX;
 
             // Create the texture sampler state.
-            CHECK_DX(_d3d11MirrorDevice->CreateSamplerState(&samplerDesc, _quadSampleState.put()));
+            CHECK_DX(_d3d11MirrorDevice->CreateSamplerState(&samplerDesc, _quadSampleState.ReleaseAndGetAddressOf()));
 
             D3D11_BLEND_DESC blendDesc;
             ZeroMemory(&blendDesc, sizeof(D3D11_BLEND_DESC));
@@ -358,24 +374,26 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
             blendDesc.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
             blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
 
-            CHECK_DX(_d3d11MirrorDevice->CreateBlendState(&blendDesc, _quadBlendState.put()));
+            CHECK_DX(_d3d11MirrorDevice->CreateBlendState(&blendDesc, _quadBlendState.ReleaseAndGetAddressOf()));
 
-            _d3d11MirrorContext->VSSetConstantBuffers(0, 1, _quadConstantBuffer.put());
-            _d3d11MirrorContext->VSSetShader(_quadVShader.get(), nullptr, 0);
-            _d3d11MirrorContext->PSSetShader(_quadPShader.get(), nullptr, 0);
-            _d3d11MirrorContext->PSSetSamplers(0, 1, _quadSampleState.put());
+            _d3d11MirrorContext->VSSetConstantBuffers(0, 1, _quadConstantBuffer.GetAddressOf());
+            _d3d11MirrorContext->VSSetShader(_quadVShader.Get(), nullptr, 0);
+            _d3d11MirrorContext->PSSetShader(_quadPShader.Get(), nullptr, 0);
+            _d3d11MirrorContext->PSSetSamplers(0, 1, _quadSampleState.GetAddressOf());
 
             UINT strides[4] = {sizeof(float) * 6, sizeof(float) * 6, sizeof(float) * 6, sizeof(float) * 6};
             UINT offsets[4] = {0, 0, 0, 0};
-            _d3d11MirrorContext->IASetVertexBuffers(0, 1, _quadVertexBuffer.put(), strides, offsets);
-            _d3d11MirrorContext->IASetIndexBuffer(_quadIndexBuffer.get(), DXGI_FORMAT_R16_UINT, 0);
+            _d3d11MirrorContext->IASetVertexBuffers(0, 1, _quadVertexBuffer.GetAddressOf(), strides, offsets);
+            _d3d11MirrorContext->IASetIndexBuffer(_quadIndexBuffer.Get(), DXGI_FORMAT_R16_UINT, 0);
             _d3d11MirrorContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-            _d3d11MirrorContext->IASetInputLayout(_quadShaderLayout.get());
+            _d3d11MirrorContext->IASetInputLayout(_quadShaderLayout.Get());
 
+            //_mappedQuadVertexBuffer = D3D11_MAPPED_SUBRESOURCE();
             CHECK_DX(_d3d11MirrorContext->Map(
-                _quadVertexBuffer.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &_mappedQuadVertexBuffer));
+                _quadVertexBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &_mappedQuadVertexBuffer));
 
             createMirrorSurface();
+            
         }
 
         ~D3D11Mirror() {
@@ -387,10 +405,10 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
                 CloseHandle(hMapFile);
             }
 
-            _d3d11MirrorContext->Unmap(_quadVertexBuffer.get(), 0);
+            _d3d11MirrorContext->Unmap(_quadVertexBuffer.Get(), 0);
         }
 
-        void createSharedMirrorTexture(XrSwapchain swapchain, const winrt::com_ptr<ID3D11Texture2D>& tex) {
+        void createSharedMirrorTexture(const XrSwapchain & swapchain, const ComPtr<ID3D11Texture2D>& tex) {
             IDXGIResource* pOtherResource(NULL);
             CHECK_DX(tex->QueryInterface(__uuidof(IDXGIResource), (void**)&pOtherResource));
 
@@ -401,10 +419,10 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
             data = MirrorData();
 
             CHECK_DX(_d3d11MirrorDevice->OpenSharedResource(
-                sharedHandle, __uuidof(IDXGIResource), data._mirrorSharedResource.put_void()));
+                sharedHandle, __uuidof(IDXGIResource), reinterpret_cast<void**>(data._mirrorSharedResource.GetAddressOf())));
 
-            CHECK_DX(
-                data._mirrorSharedResource->QueryInterface(__uuidof(ID3D11Texture2D), data._mirrorTexture.put_void()));
+            CHECK_DX(data._mirrorSharedResource->QueryInterface(__uuidof(ID3D11Texture2D),
+                                                                reinterpret_cast<void**>(data._mirrorTexture.GetAddressOf())));
 
             D3D11_TEXTURE2D_DESC srcDesc;
             data._mirrorTexture->GetDesc(&srcDesc);
@@ -424,7 +442,42 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
             viewDesc.Texture2D.MostDetailedMip = 0;
 
             CHECK_DX(_d3d11MirrorDevice->CreateShaderResourceView(
-                data._mirrorTexture.get(), &viewDesc, data._quadTextureView.put()));
+                data._mirrorTexture.Get(), &viewDesc, data._quadTextureView.GetAddressOf()));
+        }
+
+        void createSharedMirrorTexture(const XrSwapchain & swapchain, HANDLE& handle) {
+            MirrorData& data = _mirrorData[swapchain];
+            data = MirrorData();
+            ID3D11Device1* pDevice = nullptr;
+
+            CHECK_DX(_d3d11MirrorDevice->QueryInterface(__uuidof(ID3D11Device1), (void**)&pDevice));
+
+            ID3D11Texture2D* sharedTex;
+            CHECK_DX(pDevice->OpenSharedResource1(
+                handle,
+                __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&sharedTex)));
+
+            data._mirrorTexture.Attach(sharedTex);
+
+            D3D11_TEXTURE2D_DESC srcDesc;
+            data._mirrorTexture->GetDesc(&srcDesc);
+
+            // Figure out what format we need to use
+            DxgiFormatInfo info = {};
+            if (!GetFormatInfo(srcDesc.Format, info)) {
+                Log("Unknown DXGI texture format %d\n", srcDesc.Format);
+            }
+
+            bool useLinearFormat = info.bpc > 8;
+            DXGI_FORMAT type = useLinearFormat ? info.linear : info.srgb;
+            D3D11_SHADER_RESOURCE_VIEW_DESC viewDesc;
+            viewDesc.Format = type;
+            viewDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+            viewDesc.Texture2D.MipLevels = 1;
+            viewDesc.Texture2D.MostDetailedMip = 0;
+
+            CHECK_DX(_d3d11MirrorDevice->CreateShaderResourceView(
+                data._mirrorTexture.Get(), &viewDesc, data._quadTextureView.GetAddressOf()));
         }
 
         bool enabled() {
@@ -434,9 +487,9 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
         void flush() {
             _d3d11MirrorContext->Flush();
             if (_targetView) {
-                _d3d11MirrorContext->OMSetRenderTargets(1, _targetView.put(), nullptr);
+                _d3d11MirrorContext->OMSetRenderTargets(1, _targetView.GetAddressOf(), nullptr);
                 float clearRGBA[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-                _d3d11MirrorContext->ClearRenderTargetView(_targetView.get(), clearRGBA);
+                _d3d11MirrorContext->ClearRenderTargetView(_targetView.Get(), clearRGBA);
             }
         }
 
@@ -514,10 +567,10 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
 
             auto _quadTextureView = it->second._quadTextureView;
 
-            _d3d11MirrorContext->PSSetShaderResources(0, 1, _quadTextureView.put());
+            _d3d11MirrorContext->PSSetShaderResources(0, 1, _quadTextureView.GetAddressOf());
 
             float blend_factor[4] = {1.f, 1.f, 1.f, 1.f};
-            _d3d11MirrorContext->OMSetBlendState(_quadBlendState.get(), blend_factor, 0xffffffff);
+            _d3d11MirrorContext->OMSetBlendState(_quadBlendState.Get(), blend_factor, 0xffffffff);
 
             const XrRect2Di& rect = view->subImage.imageRect;
             D3D11_VIEWPORT viewport = CD3D11_VIEWPORT(
@@ -531,7 +584,7 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
             _d3d11MirrorContext->RSSetScissorRects(1, rects);
 
             // Set up for rendering
-            _d3d11MirrorContext->OMSetRenderTargets(1, _targetView.put(), nullptr);
+            _d3d11MirrorContext->OMSetRenderTargets(1, _targetView.GetAddressOf(), nullptr);
 
             // Set up camera matrices based on OpenXR's predicted viewpoint information
             XMMATRIX mat_projection = d3dXrProjection(view->fov, 0.05f, 100.0f);
@@ -599,7 +652,7 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
 
             // Update the shader's constant buffer with the transform matrix info, and then draw the quad
             XMStoreFloat4x4(&transform_buffer.world, XMMatrixTranspose(mat_model));
-            _d3d11MirrorContext->UpdateSubresource(_quadConstantBuffer.get(), 0, nullptr, &transform_buffer, 0, 0);
+            _d3d11MirrorContext->UpdateSubresource(_quadConstantBuffer.Get(), 0, nullptr, &transform_buffer, 0, 0);
             _d3d11MirrorContext->DrawIndexed((UINT)_countof(quad_inds), 0, 0);
         }
 
@@ -610,7 +663,7 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
 
             checkCopyTex(width, height, format);
             if (_copyTexture) {
-                _d3d11MirrorContext->CopyResource(_copyTexture.get(), it->second._mirrorTexture.get());
+                _d3d11MirrorContext->CopyResource(_copyTexture.Get(), it->second._mirrorTexture.Get());
             }
         }
 
@@ -640,8 +693,8 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
 
                 Log("Creating mirror textures w %u h %u f %d\n", desc.Width, desc.Height, format);
 
-                CHECK_DX(_d3d11MirrorDevice->CreateTexture2D(&desc, NULL, _copyTexture.put()));
-                CHECK_DX(_d3d11MirrorDevice->CreateTexture2D(&desc, NULL, _mirrorTexture.put()));
+                CHECK_DX(_d3d11MirrorDevice->CreateTexture2D(&desc, NULL, _copyTexture.ReleaseAndGetAddressOf()));
+                CHECK_DX(_d3d11MirrorDevice->CreateTexture2D(&desc, NULL, _mirrorTexture.ReleaseAndGetAddressOf()));
 
                 IDXGIResource* pOtherResource(NULL);
                 CHECK_DX(_mirrorTexture->QueryInterface(__uuidof(IDXGIResource), (void**)&pOtherResource));
@@ -663,14 +716,14 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
                 targetDesc.Format = color_desc.Format;
                 targetDesc.Texture2D.MipSlice = 0;
                 ID3D11RenderTargetView* rtv;
-                CHECK_DX(_d3d11MirrorDevice->CreateRenderTargetView(_copyTexture.get(), &targetDesc, &rtv));
-                _targetView.copy_from(rtv);
+                CHECK_DX(_d3d11MirrorDevice->CreateRenderTargetView(_copyTexture.Get(), &targetDesc, &rtv));
+                _targetView.Attach(rtv);
             }
         }
 
         void copyToMIrror() {
             if (_copyTexture && _mirrorTexture) {
-                _d3d11MirrorContext->CopyResource(_mirrorTexture.get(), _copyTexture.get());
+                _d3d11MirrorContext->CopyResource(_mirrorTexture.Get(), _copyTexture.Get());
             }
         }
 
@@ -719,34 +772,34 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
         }
 
         struct MirrorData {
-            winrt::com_ptr<IDXGIResource> _mirrorSharedResource = nullptr;
-            winrt::com_ptr<ID3D11Texture2D> _mirrorTexture = nullptr;
-            winrt::com_ptr<ID3D11ShaderResourceView> _quadTextureView = nullptr;
+            ComPtr<IDXGIResource> _mirrorSharedResource = nullptr;
+            ComPtr<ID3D11Texture2D> _mirrorTexture = nullptr;
+            ComPtr<ID3D11ShaderResourceView> _quadTextureView = nullptr;
         };
 
-        winrt::com_ptr<ID3D11Device> _d3d11MirrorDevice = nullptr;
-        winrt::com_ptr<ID3D11DeviceContext> _d3d11MirrorContext = nullptr;
+        ComPtr<ID3D11Device> _d3d11MirrorDevice = nullptr;
+        ComPtr<ID3D11DeviceContext> _d3d11MirrorContext = nullptr;
 
         std::map<XrSwapchain, MirrorData> _mirrorData;
         MirrorSurfaceData* _pMirrorSurfaceData = nullptr;
 
         std::map<XrSpace, XrReferenceSpaceCreateInfo> _spaceInfo;
 
-        winrt::com_ptr<ID3D11RenderTargetView> _targetView = nullptr;
+        ComPtr<ID3D11RenderTargetView> _targetView = nullptr;
 
-        winrt::com_ptr<ID3D11VertexShader> _quadVShader;
-        winrt::com_ptr<ID3D11PixelShader> _quadPShader;
-        winrt::com_ptr<ID3D11InputLayout> _quadShaderLayout;
-        winrt::com_ptr<ID3D11Buffer> _quadConstantBuffer;
-        winrt::com_ptr<ID3D11Buffer> _quadVertexBuffer;
-        winrt::com_ptr<ID3D11Buffer> _quadIndexBuffer;
-        winrt::com_ptr<ID3D11SamplerState> _quadSampleState;
-        winrt::com_ptr<ID3D11BlendState> _quadBlendState;
+        ComPtr<ID3D11VertexShader> _quadVShader = nullptr;
+        ComPtr<ID3D11PixelShader> _quadPShader = nullptr;
+        ComPtr<ID3D11InputLayout> _quadShaderLayout = nullptr;
+        ComPtr<ID3D11Buffer> _quadConstantBuffer = nullptr;
+        ComPtr<ID3D11Buffer> _quadVertexBuffer = nullptr;
+        ComPtr<ID3D11Buffer> _quadIndexBuffer = nullptr;
+        ComPtr<ID3D11SamplerState> _quadSampleState = nullptr;
+        ComPtr<ID3D11BlendState> _quadBlendState = nullptr;
 
-        D3D11_MAPPED_SUBRESOURCE _mappedQuadVertexBuffer;
+        D3D11_MAPPED_SUBRESOURCE _mappedQuadVertexBuffer{};
 
-        winrt::com_ptr<ID3D11Texture2D> _copyTexture = nullptr;
-        winrt::com_ptr<ID3D11Texture2D> _mirrorTexture = nullptr;
+        ComPtr<ID3D11Texture2D> _copyTexture = nullptr;
+        ComPtr<ID3D11Texture2D> _mirrorTexture = nullptr;
 
         bool _obsRunning = false;
     };
@@ -831,18 +884,27 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
                     _xrGraphicsAPI = XR_TYPE_GRAPHICS_BINDING_D3D11_KHR;
                     const XrGraphicsBindingD3D11KHR* d3d11Bindings =
                         reinterpret_cast<const XrGraphicsBindingD3D11KHR*>(entry);
-                    _d3d11Device.copy_from(d3d11Bindings->device);
-                    ID3D11DeviceContext* context;
-                    _d3d11Device->GetImmediateContext(&context);
-                    _d3d11Context.copy_from(context);
-
-                    if (!_mirror)
-                        _mirror = std::make_unique<D3D11Mirror>();
+                    _d3d11Device = d3d11Bindings->device;
+                    _d3d11Device->GetImmediateContext(_d3d11Context.ReleaseAndGetAddressOf());
 
                     handled = true;
                     if (!_graphicsRequirementQueried) {
                         // return XR_ERROR_GRAPHICS_REQUIREMENTS_CALL_MISSING;
                     }
+                } else if (entry->type == XR_TYPE_GRAPHICS_BINDING_D3D12_KHR) {
+                    _xrGraphicsAPI = XR_TYPE_GRAPHICS_BINDING_D3D12_KHR;
+                    const XrGraphicsBindingD3D12KHR* d3d12Bindings =
+                        reinterpret_cast<const XrGraphicsBindingD3D12KHR*>(entry);
+                    _d3d12Device = d3d12Bindings->device;
+                    _d3d12CommandQueue = d3d12Bindings->queue;
+                    _d3d12Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                                         IID_PPV_ARGS(&_commandAllocator));
+                    _d3d12Device->CreateCommandList(0,
+                                              D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                              _commandAllocator.Get(),
+                                              nullptr,
+                                              IID_PPV_ARGS(&_commandList));
+                    _commandList->Close();
                 } else {
                     _xrGraphicsAPI = XR_TYPE_UNKNOWN;
                 }
@@ -850,7 +912,9 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
                 entry = entry->next;
             }
 
-            //}
+            if (!_mirror)
+                _mirror = std::make_unique<D3D11Mirror>();
+
 
             const XrResult result = OpenXrApi::xrCreateSession(instance, createInfo, session);
             if (handled) {
@@ -939,7 +1003,8 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
                     newSwapchain._xrSwapchain = *swapchain;
                     newSwapchain._createInfo = chainCreateInfo;
                     newSwapchain._aquiredIndex = -1;
-                    newSwapchain._surfaceImages.clear();
+                    newSwapchain._dx11SurfaceImages.clear();
+                    newSwapchain._dx12SurfaceImages.clear();
                     // newSwapchain._xrSession = session;
                     auto res = _swapchains.insert_or_assign(*swapchain, newSwapchain);
                     Log("%p %s\n", swapchain, res.second ? "inserted: " : "assigned: ");
@@ -989,46 +1054,110 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
             auto& swapchainState = _swapchains[swapchain];
             const XrResult result =
                 OpenXrApi::xrEnumerateSwapchainImages(swapchain, imageCapacityInput, imageCountOutput, images);
-            if (XR_SUCCEEDED(result)) {
+            if (XR_SUCCEEDED(result) && _mirror) {
                 DxgiFormatInfo formatInfo;
-                if (_mirror && _xrGraphicsAPI == XR_TYPE_GRAPHICS_BINDING_D3D11_KHR &&
-                    GetFormatInfo((DXGI_FORMAT)swapchainState._createInfo.format, formatInfo) && formatInfo.bpc <= 10 ) {
-                    swapchainState._surfaceImages.resize(*imageCountOutput);
-                    for (int i = 0; i < *imageCountOutput; ++i) {
-                        swapchainState._surfaceImages[i] = reinterpret_cast<XrSwapchainImageD3D11KHR*>(images)[i];
-                    }
-                    images = reinterpret_cast<XrSwapchainImageBaseHeader*>(swapchainState._surfaceImages.data());
-                    if (swapchainState._lastTexture) {
-                        D3D11_TEXTURE2D_DESC srcDesc;
-                        swapchainState._lastTexture->GetDesc(&srcDesc);
-                        if (srcDesc.Width != swapchainState._createInfo.width ||
-                            srcDesc.Height != swapchainState._createInfo.height ||
-                            srcDesc.Format != (DXGI_FORMAT)swapchainState._createInfo.format) {
-                            swapchainState._lastTexture = nullptr;
+                GetFormatInfo((DXGI_FORMAT)swapchainState._createInfo.format, formatInfo);
+                if (formatInfo.bpc <= 10 &&
+                    swapchainState._createInfo.usageFlags & XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT) {
+                    if (_xrGraphicsAPI == XR_TYPE_GRAPHICS_BINDING_D3D11_KHR) {
+                        swapchainState._dx11SurfaceImages.resize(*imageCountOutput);
+                        for (int i = 0; i < *imageCountOutput; ++i) {
+                            swapchainState._dx11SurfaceImages[i] =
+                                reinterpret_cast<XrSwapchainImageD3D11KHR*>(images)[i];
                         }
-                    }
-                    if (swapchainState._lastTexture == nullptr) {
-                        D3D11_TEXTURE2D_DESC desc;
-                        ZeroMemory(&desc, sizeof(desc));
-                        desc.Width = swapchainState._createInfo.width;
-                        desc.Height = swapchainState._createInfo.height;
-                        desc.MipLevels = 1;
-                        desc.ArraySize = 1;
-                        desc.Format = (DXGI_FORMAT)swapchainState._createInfo.format;
-                        desc.SampleDesc.Count = 1;
-                        desc.SampleDesc.Quality = 0;
-                        desc.Usage = D3D11_USAGE_DEFAULT;
-                        desc.CPUAccessFlags = 0;
-                        desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
-                        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+                        images =
+                            reinterpret_cast<XrSwapchainImageBaseHeader*>(swapchainState._dx11SurfaceImages.data());
+                        if (swapchainState._dx11LastTexture) {
+                            D3D11_TEXTURE2D_DESC srcDesc;
+                            swapchainState._dx11LastTexture->GetDesc(&srcDesc);
+                            if (srcDesc.Width != swapchainState._createInfo.width ||
+                                srcDesc.Height != swapchainState._createInfo.height ||
+                                srcDesc.Format != (DXGI_FORMAT)swapchainState._createInfo.format) {
+                                swapchainState._dx11LastTexture = nullptr;
+                            }
+                        }
+                        if (swapchainState._dx11LastTexture == nullptr) {
+                            D3D11_TEXTURE2D_DESC desc;
+                            ZeroMemory(&desc, sizeof(desc));
+                            desc.Width = swapchainState._createInfo.width;
+                            desc.Height = swapchainState._createInfo.height;
+                            desc.MipLevels = 1;
+                            desc.ArraySize = 1;
+                            desc.Format = (DXGI_FORMAT)swapchainState._createInfo.format;
+                            desc.SampleDesc.Count = 1;
+                            desc.SampleDesc.Quality = 0;
+                            desc.Usage = D3D11_USAGE_DEFAULT;
+                            desc.CPUAccessFlags = 0;
+                            desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
+                            desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
 
-                        CHECK_DX(_d3d11Device->CreateTexture2D(&desc, NULL, swapchainState._lastTexture.put()));
+                            CHECK_DX(_d3d11Device->CreateTexture2D(
+                                &desc, NULL, swapchainState._dx11LastTexture.ReleaseAndGetAddressOf()));
 
-                        _mirror->createSharedMirrorTexture(swapchain, swapchainState._lastTexture);
+                            _mirror->createSharedMirrorTexture(swapchain, swapchainState._dx11LastTexture);
+                        }
+                    } else if (_xrGraphicsAPI == XR_TYPE_GRAPHICS_BINDING_D3D12_KHR) {
+                        swapchainState._dx12SurfaceImages.resize(*imageCountOutput);
+                        for (int i = 0; i < *imageCountOutput; ++i) {
+                            swapchainState._dx12SurfaceImages[i] =
+                                reinterpret_cast<XrSwapchainImageD3D12KHR*>(images)[i];
+                        }
+                        images = reinterpret_cast<XrSwapchainImageBaseHeader*>(swapchainState._dx12SurfaceImages.data());
+                        if (swapchainState._dx12LastTexture) {
+                            D3D12_RESOURCE_DESC srcDesc = swapchainState._dx12LastTexture->GetDesc();
+                            if (srcDesc.Width != swapchainState._createInfo.width ||
+                                srcDesc.Height != swapchainState._createInfo.height ||
+                                srcDesc.Format != (DXGI_FORMAT)swapchainState._createInfo.format) {
+                                swapchainState._dx12LastTexture = nullptr;
+                            }
+                        }
+                        if (swapchainState._dx12LastTexture == nullptr) {
+                            D3D12_RESOURCE_DESC d3d12TextureDesc{};
+                            d3d12TextureDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+                            d3d12TextureDesc.Alignment = 0;
+                            d3d12TextureDesc.Width = swapchainState._createInfo.width;
+                            d3d12TextureDesc.Height = swapchainState._createInfo.height;
+                            d3d12TextureDesc.DepthOrArraySize = 1;
+                            d3d12TextureDesc.MipLevels = 1;
+                            d3d12TextureDesc.Format = (DXGI_FORMAT)swapchainState._createInfo.format;
+                            d3d12TextureDesc.SampleDesc.Count = 1;
+                            d3d12TextureDesc.SampleDesc.Quality = 0;
+                            d3d12TextureDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+                            d3d12TextureDesc.Flags =
+                                D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
+
+                            D3D12_HEAP_PROPERTIES heapProperties;
+                            heapProperties.Type = D3D12_HEAP_TYPE_DEFAULT;
+                            heapProperties.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+                            heapProperties.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+                            heapProperties.CreationNodeMask = 0;
+                            heapProperties.VisibleNodeMask = 0;
+
+                            D3D12_CLEAR_VALUE clearValue{};
+                            clearValue.Format = d3d12TextureDesc.Format;
+
+                            CHECK_DX(
+                                _d3d12Device->CreateCommittedResource(&heapProperties,
+                                                                      D3D12_HEAP_FLAG_SHARED,
+                                                                      &d3d12TextureDesc,
+                                                                      D3D12_RESOURCE_STATE_COMMON,
+                                                                      &clearValue,
+                                                                      IID_PPV_ARGS(&swapchainState._dx12LastTexture)));
+
+                            HANDLE sharedHandle;
+                            CHECK_DX(_d3d12Device->CreateSharedHandle(
+                                swapchainState._dx12LastTexture.Get(), nullptr, GENERIC_ALL, nullptr, &sharedHandle));
+
+                            _mirror->createSharedMirrorTexture(swapchain, sharedHandle);
+                            
+                        }
                     }
                 }
             } else {
-                swapchainState._surfaceImages.clear();
+                if (_xrGraphicsAPI == XR_TYPE_GRAPHICS_BINDING_D3D11_KHR)
+                    swapchainState._dx11SurfaceImages.clear();
+                else if (_xrGraphicsAPI == XR_TYPE_GRAPHICS_BINDING_D3D12_KHR)
+                    swapchainState._dx12SurfaceImages.clear();
             }
 
             return result;
@@ -1054,10 +1183,22 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
                                          const XrSwapchainImageReleaseInfo* releaseInfo) override {
             if (_mirror && _mirror->enabled() && isSwapchainHandled(swapchain)) {
                 auto& swapchainState = _swapchains[swapchain];
-                if (!swapchainState._surfaceImages.empty()) {
-                    auto* textPtr = swapchainState._surfaceImages[swapchainState._aquiredIndex].texture;
-                    if (_xrGraphicsAPI == XR_TYPE_GRAPHICS_BINDING_D3D11_KHR && swapchainState._lastTexture) {
-                        _d3d11Context->CopyResource(swapchainState._lastTexture.get(), textPtr);
+                if (_xrGraphicsAPI == XR_TYPE_GRAPHICS_BINDING_D3D11_KHR &&
+                    !swapchainState._dx11SurfaceImages.empty()) {
+                    auto* textPtr = swapchainState._dx11SurfaceImages[swapchainState._aquiredIndex].texture;
+                    if (swapchainState._dx11LastTexture) {
+                        _d3d11Context->CopyResource(swapchainState._dx11LastTexture.Get(), textPtr);
+                    }
+                }
+                else if (_xrGraphicsAPI == XR_TYPE_GRAPHICS_BINDING_D3D12_KHR &&
+                    !swapchainState._dx12SurfaceImages.empty()) {
+                    auto* textPtr = swapchainState._dx12SurfaceImages[swapchainState._aquiredIndex].texture;
+                    if (swapchainState._dx12LastTexture) {
+                        _commandList->Reset(_commandAllocator.Get(), nullptr);
+                        _commandList->CopyResource(swapchainState._dx12LastTexture.Get(), textPtr);
+                        _commandList->Close();
+                        ID3D12CommandList* set[] = {_commandList.Get()};
+                        _d3d12CommandQueue->ExecuteCommandLists(1, set);
                     }
                 }
             }
@@ -1148,7 +1289,7 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
                                 projView = &projLayer->views[0];
                                 if (isSwapchainHandled(projView->subImage.swapchain)) {
                                     auto& swapchainState = _swapchains[projView->subImage.swapchain];
-                                    if (swapchainState._lastTexture && !swapchainState._surfaceImages.empty()) {
+                                    if (swapchainState._dx11LastTexture || swapchainState._dx12LastTexture) {
                                         _mirror->copyPerspectiveTex(projView->subImage.imageRect.extent.width,
                                                                     projView->subImage.imageRect.extent.height,
                                                                     (DXGI_FORMAT)swapchainState._createInfo.format,
@@ -1161,7 +1302,7 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
                                 reinterpret_cast<const XrCompositionLayerQuad*>(hdr);
                             if (isSwapchainHandled(quadLayer->subImage.swapchain)) {
                                 auto& swapchainState = _swapchains[quadLayer->subImage.swapchain];
-                                if (swapchainState._lastTexture && !swapchainState._surfaceImages.empty()) {
+                                if (swapchainState._dx11LastTexture || swapchainState._dx12LastTexture) {
                                     if (projView) {
                                         _mirror->Blend(
                                             projView, quadLayer, (DXGI_FORMAT)swapchainState._createInfo.format);
@@ -1186,9 +1327,11 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
         struct Swapchain {
             XrSwapchain _xrSwapchain{XR_NULL_HANDLE};
             XrSwapchainCreateInfo _createInfo;
-            std::vector<XrSwapchainImageD3D11KHR> _surfaceImages;
+            std::vector<XrSwapchainImageD3D11KHR> _dx11SurfaceImages;
+            std::vector<XrSwapchainImageD3D12KHR> _dx12SurfaceImages;
             uint32_t _aquiredIndex = -1;
-            winrt::com_ptr<ID3D11Texture2D> _lastTexture = nullptr;
+            ComPtr<ID3D11Texture2D> _dx11LastTexture = nullptr;
+            ComPtr<ID3D12Resource> _dx12LastTexture = nullptr;
         };
 
         void cleanupSession(Session& sessionState) {
@@ -1211,8 +1354,13 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
 
         XrStructureType _xrGraphicsAPI = XR_TYPE_UNKNOWN;
 
-        winrt::com_ptr<ID3D11Device> _d3d11Device = nullptr;
-        winrt::com_ptr<ID3D11DeviceContext> _d3d11Context = nullptr;
+        ID3D11Device* _d3d11Device = nullptr;
+        ComPtr<ID3D11DeviceContext> _d3d11Context = nullptr;
+
+        ID3D12Device* _d3d12Device = nullptr;
+        ID3D12CommandQueue* _d3d12CommandQueue = nullptr;
+        ComPtr<ID3D12CommandAllocator> _commandAllocator;
+        ComPtr<ID3D12GraphicsCommandList> _commandList;
 
         XrSystemId _systemId{XR_NULL_SYSTEM_ID};
         bool _graphicsRequirementQueried{false};
