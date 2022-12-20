@@ -990,7 +990,9 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
             const XrResult result =
                 OpenXrApi::xrEnumerateSwapchainImages(swapchain, imageCapacityInput, imageCountOutput, images);
             if (XR_SUCCEEDED(result)) {
-                if (_mirror && _xrGraphicsAPI == XR_TYPE_GRAPHICS_BINDING_D3D11_KHR) {
+                DxgiFormatInfo formatInfo;
+                if (_mirror && _xrGraphicsAPI == XR_TYPE_GRAPHICS_BINDING_D3D11_KHR &&
+                    GetFormatInfo((DXGI_FORMAT)swapchainState._createInfo.format, formatInfo) && formatInfo.bpc <= 10 ) {
                     swapchainState._surfaceImages.resize(*imageCountOutput);
                     for (int i = 0; i < *imageCountOutput; ++i) {
                         swapchainState._surfaceImages[i] = reinterpret_cast<XrSwapchainImageD3D11KHR*>(images)[i];
@@ -1054,7 +1056,7 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
                 auto& swapchainState = _swapchains[swapchain];
                 if (!swapchainState._surfaceImages.empty()) {
                     auto* textPtr = swapchainState._surfaceImages[swapchainState._aquiredIndex].texture;
-                    if (_xrGraphicsAPI == XR_TYPE_GRAPHICS_BINDING_D3D11_KHR) {
+                    if (_xrGraphicsAPI == XR_TYPE_GRAPHICS_BINDING_D3D11_KHR && swapchainState._lastTexture) {
                         _d3d11Context->CopyResource(swapchainState._lastTexture.get(), textPtr);
                     }
                 }
