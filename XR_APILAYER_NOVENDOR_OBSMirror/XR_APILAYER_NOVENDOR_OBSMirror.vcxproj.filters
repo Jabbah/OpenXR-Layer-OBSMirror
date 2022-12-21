@@ -32,6 +32,9 @@
     <ClInclude Include="framework\util.h">
       <Filter>Framework</Filter>
     </ClInclude>
+    <ClInclude Include="dx11mirror.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp">
@@ -52,6 +55,9 @@
     <ClCompile Include="framework\log.cpp">
       <Filter>Framework</Filter>
     </ClCompile>
+    <ClCompile Include="dx11mirror.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="XR_APILAYER_NOVENDOR_OBSMirror.json" />
@@ -62,5 +68,8 @@
       <Filter>Framework</Filter>
     </None>
     <None Include="packages.config" />
+  </ItemGroup>
+  <ItemGroup>
+    <Natvis Include="$(MSBuildThisFileDirectory)..\..\natvis\wil.natvis" />
   </ItemGroup>
 </Project>
