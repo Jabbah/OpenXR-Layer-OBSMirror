@@ -61,6 +61,13 @@ namespace {
     using namespace layer_OBSMirror::log;
     using namespace DirectX; // Matrix math
 
+    void WaitForFence(ID3D12Fence* fence, UINT64 completionValue, HANDLE waitEvent) {
+        if (fence->GetCompletedValue() < completionValue) {
+            fence->SetEventOnCompletion(completionValue, waitEvent);
+            WaitForSingleObject(waitEvent, 1000);
+        }
+    }
+
     struct DxgiFormatInfo {
         /// The different versions of this format, set to DXGI_FORMAT_UNKNOWN if absent.
         /// Both the SRGB and linear formats should be UNORM.
@@ -448,16 +455,10 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
         void createSharedMirrorTexture(const XrSwapchain & swapchain, HANDLE& handle) {
             MirrorData& data = _mirrorData[swapchain];
             data = MirrorData();
-            ID3D11Device1* pDevice = nullptr;
+            ComPtr<ID3D11Device1> pDevice = nullptr;
 
-            CHECK_DX(_d3d11MirrorDevice->QueryInterface(__uuidof(ID3D11Device1), (void**)&pDevice));
-
-            ID3D11Texture2D* sharedTex;
-            CHECK_DX(pDevice->OpenSharedResource1(
-                handle,
-                __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&sharedTex)));
-
-            data._mirrorTexture.Attach(sharedTex);
+            CHECK_DX(_d3d11MirrorDevice->QueryInterface(IID_PPV_ARGS(&pDevice)));
+            CHECK_DX(pDevice->OpenSharedResource1(handle, IID_PPV_ARGS(&data._mirrorTexture)));
 
             D3D11_TEXTURE2D_DESC srcDesc;
             data._mirrorTexture->GetDesc(&srcDesc);
@@ -807,6 +808,7 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
     class OpenXrLayer : public layer_OBSMirror::OpenXrApi {
       public:
         OpenXrLayer() {
+            _mirror = std::make_unique<D3D11Mirror>();
         }
 
         ~OpenXrLayer() override {
@@ -897,23 +899,12 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
                         reinterpret_cast<const XrGraphicsBindingD3D12KHR*>(entry);
                     _d3d12Device = d3d12Bindings->device;
                     _d3d12CommandQueue = d3d12Bindings->queue;
-                    _d3d12Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                                         IID_PPV_ARGS(&_commandAllocator));
-                    _d3d12Device->CreateCommandList(0,
-                                              D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                              _commandAllocator.Get(),
-                                              nullptr,
-                                              IID_PPV_ARGS(&_commandList));
-                    _commandList->Close();
                 } else {
                     _xrGraphicsAPI = XR_TYPE_UNKNOWN;
                 }
 
                 entry = entry->next;
             }
-
-            if (!_mirror)
-                _mirror = std::make_unique<D3D11Mirror>();
 
 
             const XrResult result = OpenXrApi::xrCreateSession(instance, createInfo, session);
@@ -1097,10 +1088,37 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
                             _mirror->createSharedMirrorTexture(swapchain, swapchainState._dx11LastTexture);
                         }
                     } else if (_xrGraphicsAPI == XR_TYPE_GRAPHICS_BINDING_D3D12_KHR) {
+                        for (auto event : swapchainState._frameFenceEvents) {
+                            CloseHandle(event);
+                        }
+
+                        swapchainState._frameFenceEvents.clear();
+                        swapchainState._frameFences.clear();
+                        swapchainState._fenceValues.clear();
                         swapchainState._dx12SurfaceImages.resize(*imageCountOutput);
+                        swapchainState._commandAllocators.resize(*imageCountOutput);
+                        swapchainState._commandLists.resize(*imageCountOutput);
+                        swapchainState._frameFenceEvents.resize(*imageCountOutput);
+                        swapchainState._frameFences.resize(*imageCountOutput);
+                        swapchainState._fenceValues.resize(*imageCountOutput);
+
                         for (int i = 0; i < *imageCountOutput; ++i) {
                             swapchainState._dx12SurfaceImages[i] =
                                 reinterpret_cast<XrSwapchainImageD3D12KHR*>(images)[i];
+
+                            swapchainState._frameFenceEvents[i] = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+                            swapchainState._fenceValues[i] = 0;
+                            _d3d12Device->CreateFence(
+                                0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&swapchainState._frameFences[i]));
+
+                            _d3d12Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                                                 IID_PPV_ARGS(&swapchainState._commandAllocators[i]));
+                            _d3d12Device->CreateCommandList(0,
+                                                            D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                                            swapchainState._commandAllocators[i].Get(),
+                                                            nullptr,
+                                                            IID_PPV_ARGS(&swapchainState._commandLists[i]));
+                            swapchainState._commandLists[i]->Close();
                         }
                         images = reinterpret_cast<XrSwapchainImageBaseHeader*>(swapchainState._dx12SurfaceImages.data());
                         if (swapchainState._dx12LastTexture) {
@@ -1144,11 +1162,18 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
                                                                       &clearValue,
                                                                       IID_PPV_ARGS(&swapchainState._dx12LastTexture)));
 
-                            HANDLE sharedHandle;
-                            CHECK_DX(_d3d12Device->CreateSharedHandle(
-                                swapchainState._dx12LastTexture.Get(), nullptr, GENERIC_ALL, nullptr, &sharedHandle));
+                            if (swapchainState._sharedHandle) {
+                                CloseHandle(swapchainState._sharedHandle);
+                                swapchainState._sharedHandle = NULL;
+                            }
 
-                            _mirror->createSharedMirrorTexture(swapchain, sharedHandle);
+                            CHECK_DX(_d3d12Device->CreateSharedHandle(swapchainState._dx12LastTexture.Get(),
+                                                                      nullptr,
+                                                                      GENERIC_ALL,
+                                                                      nullptr,
+                                                                      &swapchainState._sharedHandle));
+
+                            _mirror->createSharedMirrorTexture(swapchain, swapchainState._sharedHandle);
                             
                         }
                     }
@@ -1183,26 +1208,42 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
                                          const XrSwapchainImageReleaseInfo* releaseInfo) override {
             if (_mirror && _mirror->enabled() && isSwapchainHandled(swapchain)) {
                 auto& swapchainState = _swapchains[swapchain];
+                uint32_t idx = swapchainState._aquiredIndex;
                 if (_xrGraphicsAPI == XR_TYPE_GRAPHICS_BINDING_D3D11_KHR &&
                     !swapchainState._dx11SurfaceImages.empty()) {
-                    auto* textPtr = swapchainState._dx11SurfaceImages[swapchainState._aquiredIndex].texture;
+                    auto* textPtr = swapchainState._dx11SurfaceImages[idx].texture;
                     if (swapchainState._dx11LastTexture) {
                         _d3d11Context->CopyResource(swapchainState._dx11LastTexture.Get(), textPtr);
                     }
                 }
                 else if (_xrGraphicsAPI == XR_TYPE_GRAPHICS_BINDING_D3D12_KHR &&
                     !swapchainState._dx12SurfaceImages.empty()) {
-                    auto* textPtr = swapchainState._dx12SurfaceImages[swapchainState._aquiredIndex].texture;
+                    auto* textPtr = swapchainState._dx12SurfaceImages[idx].texture;
                     if (swapchainState._dx12LastTexture) {
-                        _commandList->Reset(_commandAllocator.Get(), nullptr);
-                        _commandList->CopyResource(swapchainState._dx12LastTexture.Get(), textPtr);
-                        _commandList->Close();
-                        ID3D12CommandList* set[] = {_commandList.Get()};
+                        WaitForFence(swapchainState._frameFences[idx].Get(),
+                                     swapchainState._fenceValues[idx],
+                                     swapchainState._frameFenceEvents[idx]);
+                        swapchainState._commandAllocators[idx]->Reset();
+                        swapchainState._commandLists[idx]->Reset(swapchainState._commandAllocators[idx].Get(), nullptr);
+                        swapchainState._commandLists[idx]->CopyResource(swapchainState._dx12LastTexture.Get(), textPtr);
+                        swapchainState._commandLists[idx]->Close();
+                        ID3D12CommandList* set[] = {swapchainState._commandLists[idx].Get()};
                         _d3d12CommandQueue->ExecuteCommandLists(1, set);
                     }
                 }
             }
             const XrResult result = OpenXrApi::xrReleaseSwapchainImage(swapchain, releaseInfo);
+            if (_mirror && _mirror->enabled() && isSwapchainHandled(swapchain) &&
+                _xrGraphicsAPI == XR_TYPE_GRAPHICS_BINDING_D3D12_KHR){
+                auto& swapchainState = _swapchains[swapchain];
+                uint32_t idx = swapchainState._aquiredIndex;
+                if (!swapchainState._dx12SurfaceImages.empty()) {
+                    const auto fenceValue = _currentFenceValue;
+                    _d3d12CommandQueue->Signal(swapchainState._frameFences[idx].Get(), fenceValue);
+                    swapchainState._fenceValues[idx] = fenceValue;
+                    ++_currentFenceValue;
+                }
+            }
             return result;
         }
 
@@ -1325,6 +1366,13 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
         };
 
         struct Swapchain {
+            ~Swapchain() {
+                for (auto event : _frameFenceEvents) {
+                    CloseHandle(event);
+                }
+                if (_sharedHandle)
+                    CloseHandle(_sharedHandle);
+            }
             XrSwapchain _xrSwapchain{XR_NULL_HANDLE};
             XrSwapchainCreateInfo _createInfo;
             std::vector<XrSwapchainImageD3D11KHR> _dx11SurfaceImages;
@@ -1332,6 +1380,12 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
             uint32_t _aquiredIndex = -1;
             ComPtr<ID3D11Texture2D> _dx11LastTexture = nullptr;
             ComPtr<ID3D12Resource> _dx12LastTexture = nullptr;
+            std::vector<ComPtr<ID3D12GraphicsCommandList>> _commandLists;
+            std::vector<ComPtr<ID3D12CommandAllocator>> _commandAllocators;
+            std::vector<HANDLE> _frameFenceEvents;
+            std::vector<ComPtr<ID3D12Fence>> _frameFences;
+            std::vector<UINT64> _fenceValues;
+            HANDLE _sharedHandle = NULL;
         };
 
         void cleanupSession(Session& sessionState) {
@@ -1352,6 +1406,10 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
             return _swapchains.find(swapchain) != _swapchains.cend();
         }
 
+        std::unique_ptr<D3D11Mirror> _mirror;
+
+        UINT64 _currentFenceValue;
+
         XrStructureType _xrGraphicsAPI = XR_TYPE_UNKNOWN;
 
         ID3D11Device* _d3d11Device = nullptr;
@@ -1359,9 +1417,7 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
 
         ID3D12Device* _d3d12Device = nullptr;
         ID3D12CommandQueue* _d3d12CommandQueue = nullptr;
-        ComPtr<ID3D12CommandAllocator> _commandAllocator;
-        ComPtr<ID3D12GraphicsCommandList> _commandList;
-
+        
         XrSystemId _systemId{XR_NULL_SYSTEM_ID};
         bool _graphicsRequirementQueried{false};
 
@@ -1371,7 +1427,6 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
         std::map<XrSession, Session> _sessions;
         std::map<XrSwapchain, Swapchain> _swapchains;
 
-        std::unique_ptr<D3D11Mirror> _mirror;
     };
 
     std::unique_ptr<OpenXrLayer> g_instance = nullptr;
