@@ -622,12 +622,11 @@ namespace {
                             const XrCompositionLayerProjection* projLayer =
                                 reinterpret_cast<const XrCompositionLayerProjection*>(hdr);
                             if (projLayer->viewCount == 2) {
-                                projView = &projLayer->views[0];
+                                projView = &projLayer->views[_mirror->getEyeIndex()];
                                 if (isSwapchainHandled(projView->subImage.swapchain)) {
                                     auto& swapchainState = _swapchains[projView->subImage.swapchain];
                                     if (swapchainState._dx11LastTexture || swapchainState._dx12LastTexture) {
-                                        _mirror->copyPerspectiveTex(projView->subImage.imageRect.extent.width,
-                                                                    projView->subImage.imageRect.extent.height,
+                                        _mirror->copyPerspectiveTex(projView->subImage.imageRect,
                                                                     (DXGI_FORMAT)swapchainState._createInfo.format,
                                                                     projView->subImage.swapchain);
                                     }

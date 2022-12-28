@@ -44,6 +44,8 @@ namespace Mirror
 
         void checkOBSRunning();
 
+        uint32_t getEyeIndex() const;
+
       private:
         void createMirrorSurface();
 

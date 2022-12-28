@@ -614,6 +614,10 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
         lastFrameNum = _pMirrorSurfaceData->frameNumber;
     }
 
+    uint32_t D3D11Mirror::getEyeIndex() const {
+        return _pMirrorSurfaceData->eyeIndex;
+    }
+
     void D3D11Mirror::createMirrorSurface() {
         Log("Mapping file %s.\n", szName_);
         hMapFile = CreateFileMappingA(INVALID_HANDLE_VALUE,      // use paging file
