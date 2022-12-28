@@ -38,7 +38,7 @@ namespace Mirror
                    const XrCompositionLayerQuad* quad,
                    DXGI_FORMAT format);
 
-        void copyPerspectiveTex(uint32_t width, uint32_t height, DXGI_FORMAT format, XrSwapchain swapchain);
+        void copyPerspectiveTex(const XrRect2Di& imgRect, const DXGI_FORMAT format, const XrSwapchain& swapchain);
 
         void copyToMIrror();
 

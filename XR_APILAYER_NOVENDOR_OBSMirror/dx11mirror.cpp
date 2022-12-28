@@ -526,14 +526,22 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
         _d3d11MirrorContext->DrawIndexed((UINT)_countof(quad_inds), 0, 0);
     }
 
-    void D3D11Mirror::copyPerspectiveTex(uint32_t width, uint32_t height, DXGI_FORMAT format, XrSwapchain swapchain) {
+    void D3D11Mirror::copyPerspectiveTex(const XrRect2Di & imgRect, const DXGI_FORMAT format, const XrSwapchain & swapchain) {
         auto it = _mirrorData.find(swapchain);
         if (it == _mirrorData.end())
             return;
 
-        checkCopyTex(width, height, format);
+        checkCopyTex(imgRect.extent.width, imgRect.extent.height, format);
         if (_copyTexture) {
-            _d3d11MirrorContext->CopyResource(_copyTexture.Get(), it->second._mirrorTexture.Get());
+            D3D11_BOX sourceRegion;
+            sourceRegion.left = imgRect.offset.x;
+            sourceRegion.right = imgRect.offset.x + imgRect.extent.width;
+            sourceRegion.top = imgRect.offset.y;
+            sourceRegion.bottom = imgRect.offset.y + imgRect.extent.height;
+            sourceRegion.front = 0;
+            sourceRegion.back = 1;
+            _d3d11MirrorContext->CopySubresourceRegion(
+                _copyTexture.Get(), 0, 0, 0, 0, it->second._mirrorTexture.Get(), 0, &sourceRegion);
         }
     }
 
