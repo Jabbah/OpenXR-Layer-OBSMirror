@@ -15,7 +15,7 @@ namespace Mirror
         int bpp, bpc, channels;
     };
 
-    bool GetFormatInfo(DXGI_FORMAT format, DxgiFormatInfo& out);
+    bool GetFormatInfo(const DXGI_FORMAT format, DxgiFormatInfo& out);
 
     class D3D11Mirror {
       public:
@@ -24,19 +24,19 @@ namespace Mirror
 
         void createSharedMirrorTexture(const XrSwapchain& swapchain, const ComPtr<ID3D11Texture2D>& tex);
 
-        void createSharedMirrorTexture(const XrSwapchain& swapchain, HANDLE& handle);
+        void createSharedMirrorTexture(const XrSwapchain& swapchain, const HANDLE& handle);
 
-        bool enabled();
+        bool enabled() const;
 
         void flush();
 
         void addSpace(const XrSpace& space, const XrReferenceSpaceCreateInfo* createInfo);
 
-        const XrReferenceSpaceCreateInfo* getSpaceInfo(const XrSpace& space);
+        const XrReferenceSpaceCreateInfo* getSpaceInfo(const XrSpace& space) const;
 
         void Blend(const XrCompositionLayerProjectionView* view,
                    const XrCompositionLayerQuad* quad,
-                   DXGI_FORMAT format);
+                   const DXGI_FORMAT format);
 
         void copyPerspectiveTex(const XrRect2Di& imgRect, const DXGI_FORMAT format, const XrSwapchain& swapchain);
 
@@ -49,7 +49,7 @@ namespace Mirror
       private:
         void createMirrorSurface();
 
-        void checkCopyTex(uint32_t width, uint32_t height, DXGI_FORMAT format);
+        void checkCopyTex(const uint32_t width, const uint32_t height, const DXGI_FORMAT format);
 
         struct MirrorData {
             ComPtr<IDXGIResource> _mirrorSharedResource = nullptr;

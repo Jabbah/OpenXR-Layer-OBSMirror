@@ -27,7 +27,7 @@ namespace Mirror {
     using namespace DirectX; // Matrix math
 
 
-    bool GetFormatInfo(DXGI_FORMAT format, DxgiFormatInfo& out) {
+    bool GetFormatInfo(const DXGI_FORMAT format, DxgiFormatInfo& out) {
 #define DEF_FMT_BASE(typeless, linear, srgb, bpp, bpc, channels)                                                       \
     {                                                                                                                  \
         out = DxgiFormatInfo{srgb, linear, typeless, bpp, bpc, channels};                                              \
@@ -349,7 +349,7 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
             data._mirrorTexture.Get(), &viewDesc, data._quadTextureView.GetAddressOf()));
     }
 
-    void D3D11Mirror::createSharedMirrorTexture(const XrSwapchain& swapchain, HANDLE& handle) {
+    void D3D11Mirror::createSharedMirrorTexture(const XrSwapchain& swapchain, const HANDLE& handle) {
         MirrorData& data = _mirrorData[swapchain];
         data = MirrorData();
         ComPtr<ID3D11Device1> pDevice = nullptr;
@@ -380,7 +380,7 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
             data._mirrorTexture.Get(), &viewDesc, data._quadTextureView.GetAddressOf()));
     }
 
-    bool D3D11Mirror::enabled() {
+    bool D3D11Mirror::enabled() const {
         return _obsRunning;
     }
 
@@ -397,7 +397,7 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
         _spaceInfo[space] = *createInfo;
     }
 
-    const XrReferenceSpaceCreateInfo* D3D11Mirror::getSpaceInfo(const XrSpace& space) {
+    const XrReferenceSpaceCreateInfo* D3D11Mirror::getSpaceInfo(const XrSpace& space) const {
         auto it = _spaceInfo.find(space);
         if (it != _spaceInfo.end())
             return &it->second;
@@ -406,8 +406,8 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
     }
 
     void D3D11Mirror::Blend(const XrCompositionLayerProjectionView* view,
-                const XrCompositionLayerQuad* quad,
-                DXGI_FORMAT format) {
+                            const XrCompositionLayerQuad* quad,
+                            const DXGI_FORMAT format) {
         auto it = _mirrorData.find(quad->subImage.swapchain);
         if (it == _mirrorData.end())
             return;
@@ -526,7 +526,9 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
         _d3d11MirrorContext->DrawIndexed((UINT)_countof(quad_inds), 0, 0);
     }
 
-    void D3D11Mirror::copyPerspectiveTex(const XrRect2Di & imgRect, const DXGI_FORMAT format, const XrSwapchain & swapchain) {
+    void D3D11Mirror::copyPerspectiveTex(const XrRect2Di & imgRect, 
+                                         const DXGI_FORMAT format, 
+                                         const XrSwapchain & swapchain) {
         auto it = _mirrorData.find(swapchain);
         if (it == _mirrorData.end())
             return;
@@ -545,7 +547,9 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
         }
     }
 
-    void D3D11Mirror::checkCopyTex(uint32_t width, uint32_t height, DXGI_FORMAT format) {
+    void D3D11Mirror::checkCopyTex(const uint32_t width, 
+                                   const uint32_t height, 
+                                   const DXGI_FORMAT format) {
         if (_copyTexture) {
             D3D11_TEXTURE2D_DESC srcDesc;
             _copyTexture->GetDesc(&srcDesc);
