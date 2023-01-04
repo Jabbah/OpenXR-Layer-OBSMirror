@@ -5,6 +5,9 @@ An OpenXR API Layer to mirror what you see in VR to OBS. (Currently DX11 support
 OpenXR Layer API template was used as the basis for this and can be found here:
 https://github.com/mbucchia/OpenXR-Layer-Template
 
+Note: For smooth recording in OBS run as Admin:
+https://obsproject.com/forum/threads/obs-studio-24-0-3-gpu-priority-fix-testing.111669/
+
 # Installation instructions:
 
 ## Install the OpenXR Layer
