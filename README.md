@@ -12,6 +12,12 @@ Get the latest release from the releases section on the right.
 
 Extract the files to a folder in Program Files e.g. C:\Program Files\OpenXR-OBSMirror\
 
+You may need to unblock the files by right click > properties > check unblock
+
+<img width="269" alt="image" src="https://user-images.githubusercontent.com/2940221/210623325-e47bb303-e3d0-427a-abaa-845a2fd116eb.png">
+
+If you have isntalled a previous version you should uninstall that first.
+
 To install the OpenXR Layer right click on Install-Layer.ps1 and select "Run with PowerShell"
 
 To uninstall OpenXR Layer right click on Uninstall-Layer.ps1 and select "Run with PowerShell"
