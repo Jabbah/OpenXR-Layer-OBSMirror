@@ -4,7 +4,7 @@
 
 namespace Mirror
 {
-    class MirrorSurfaceData;
+    struct MirrorSurfaceData;
 
     struct DxgiFormatInfo {
         /// The different versions of this format, set to DXGI_FORMAT_UNKNOWN if absent.
@@ -22,7 +22,7 @@ namespace Mirror
         D3D11Mirror();
         ~D3D11Mirror();
 
-        void createSharedMirrorTexture(const XrSwapchain& swapchain, const ComPtr<ID3D11Texture2D>& tex);
+        void createSharedMirrorTexture(const XrSwapchain& swapchain, const ComPtr<ID3D11Texture2D>& tex, const DXGI_FORMAT format);
 
         void createSharedMirrorTexture(const XrSwapchain& swapchain, const HANDLE& handle);
 
@@ -40,7 +40,7 @@ namespace Mirror
 
         void copyPerspectiveTex(const XrRect2Di& imgRect, const DXGI_FORMAT format, const XrSwapchain& swapchain);
 
-        void copyToMIrror();
+        void copyToMirror();
 
         void checkOBSRunning();
 
@@ -51,16 +51,16 @@ namespace Mirror
 
         void checkCopyTex(const uint32_t width, const uint32_t height, const DXGI_FORMAT format);
 
-        struct MirrorData {
-            ComPtr<IDXGIResource> _mirrorSharedResource = nullptr;
-            ComPtr<ID3D11Texture2D> _mirrorTexture = nullptr;
+        struct SourceData {
+            ComPtr<IDXGIResource> _sharedResource = nullptr;
+            ComPtr<ID3D11Texture2D> _texture = nullptr;
             ComPtr<ID3D11ShaderResourceView> _quadTextureView = nullptr;
         };
 
         ComPtr<ID3D11Device> _d3d11MirrorDevice = nullptr;
         ComPtr<ID3D11DeviceContext> _d3d11MirrorContext = nullptr;
 
-        std::map<XrSwapchain, MirrorData> _mirrorData;
+        std::map<XrSwapchain, SourceData> _sourceData;
         MirrorSurfaceData* _pMirrorSurfaceData = nullptr;
 
         std::map<XrSpace, XrReferenceSpaceCreateInfo> _spaceInfo;
@@ -78,9 +78,10 @@ namespace Mirror
 
         D3D11_MAPPED_SUBRESOURCE _mappedQuadVertexBuffer{};
 
-        ComPtr<ID3D11Texture2D> _copyTexture = nullptr;
-        ComPtr<ID3D11Texture2D> _mirrorTexture = nullptr;
+        ComPtr<ID3D11Texture2D> _compositorTexture = nullptr;
+        std::vector<ComPtr<ID3D11Texture2D>> _mirrorTextures;
 
+        uint32_t _frameCounter = 0;
         bool _obsRunning = false;
     };
 }

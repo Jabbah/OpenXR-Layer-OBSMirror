@@ -25,9 +25,8 @@
 
 #include <tchar.h>
 
-
 #define BUF_SIZE 256
-char szName[] = "OpenCompositeMirrorSurface";
+char szName[] = "OpenXROBSMirrorSurface";
 HANDLE hMapFile = NULL;
 HANDLE sharedHandle;
 
@@ -44,29 +43,20 @@ HANDLE sharedHandle;
 	blog(LOG_WARNING, "[%s] " message, \
 	     obs_source_get_name(context->source), ##__VA_ARGS__)
 
-struct MirrorSurfaceData
-{
+struct MirrorSurfaceData {
+	uint32_t lastProcessedIndex = 0;
 	uint32_t frameNumber = 0;
 	uint32_t eyeIndex = 0;
-	HANDLE sharedHandle = nullptr;
-
-	void setHandle(HANDLE h)
-	{
-		sharedHandle = h;
-	}
-
-	HANDLE getHandle()
-	{
-		return sharedHandle;
-	}
+	HANDLE sharedHandle[3] = {NULL};
 
 	void reset()
 	{
-		sharedHandle = nullptr;
+		for (int i = 0; i < 3; ++i)
+			sharedHandle[i] = NULL;
 	}
 };
 
-MirrorSurfaceData* pMirrorSurfaceData;
+MirrorSurfaceData *pMirrorSurfaceData;
 
 struct crop {
 	double top;
@@ -90,12 +80,12 @@ struct win_openxrmirror {
 	crop crop;
 
 	gs_texture_t *texture = nullptr;
-	winrt::com_ptr<ID3D11Device> dev11;
-	winrt::com_ptr<ID3D11DeviceContext> ctx11;
-	winrt::com_ptr<ID3D11Texture2D> mirror_texture;
-	winrt::com_ptr<IDXGIResource> copy_tex_resource_mirror;
+	winrt::com_ptr<ID3D11Device> dev11 = nullptr;
+	winrt::com_ptr<ID3D11DeviceContext> ctx11 = nullptr;
+	std::vector<winrt::com_ptr<ID3D11Texture2D>> mirror_textures;
+	std::vector<winrt::com_ptr<IDXGIResource>> copy_tex_resource_mirrors;
 
-	winrt::com_ptr<ID3D11Texture2D> texCrop;
+	winrt::com_ptr<ID3D11Texture2D> texCrop = nullptr;
 
 	ULONGLONG lastCheckTick;
 
@@ -189,10 +179,9 @@ bool GetFormatInfo(DXGI_FORMAT format, DxgiFormatInfo &out)
 // we do not know.
 static void win_openxrmirror_update_properties(void *data)
 {
-	//blog(LOG_INFO , "win_openxrmirror_update_properties");
 	struct win_openxrmirror *context = (win_openxrmirror *)data;
 	if ((context->crop_left && context->crop_right && context->crop_top &&
-	      context->crop_bottom)) {
+	     context->crop_bottom)) {
 		const bool visible = context->device_width > 0 &&
 				     context->device_height > 0;
 		obs_property_set_visible(context->crop_left, visible);
@@ -209,8 +198,6 @@ static void win_openxrmirror_update_properties(void *data)
 		obs_property_float_set_limits(context->crop_bottom, 0,
 					    100, 0.1);
 	}
-
-	//blog(LOG_INFO, "~win_openxrmirror_update_properties");
 }
 
 static void win_openxrmirror_deinit(void *data)
@@ -232,8 +219,8 @@ static void win_openxrmirror_deinit(void *data)
 	}
 
 	context->texCrop = nullptr;
-	context->mirror_texture = nullptr;
-	context->copy_tex_resource_mirror = nullptr;
+	context->mirror_textures.clear();
+	context->copy_tex_resource_mirrors.clear();
 	context->ctx11 = nullptr;
 	context->dev11 = nullptr;
 
@@ -262,25 +249,23 @@ static void win_openxrmirror_init(void *data, bool forced = false)
 
 	context->lastCheckTick = GetTickCount64();
 
-	hMapFile = OpenFileMappingA(
-		FILE_MAP_WRITE | FILE_MAP_READ,         // read/write access
-		FALSE,                 // do not inherit the name
-		szName);               // name of mapping object
+	hMapFile = OpenFileMappingA(FILE_MAP_WRITE |
+					    FILE_MAP_READ, // read/write access
+				    FALSE,   // do not inherit the name
+				    szName); // name of mapping object
 
-	if (hMapFile == NULL)
-	{
-		warn("win_openxrmirror_init: Could not open file mapping object:  %d", GetLastError());
+	if (hMapFile == NULL) {
+		warn("win_openxrmirror_init: Could not open file mapping object:  %d",
+		     GetLastError());
 		return;
 	}
 
-	pMirrorSurfaceData = (MirrorSurfaceData*)MapViewOfFile(hMapFile, // handle to map object
-		FILE_MAP_WRITE | FILE_MAP_READ,  // read permission
-		0,
-		0,
-		sizeof(MirrorSurfaceData));
+	pMirrorSurfaceData = (MirrorSurfaceData *)MapViewOfFile(
+		hMapFile,                       // handle to map object
+		FILE_MAP_WRITE | FILE_MAP_READ, // read permission
+		0, 0, sizeof(MirrorSurfaceData));
 
-	if (pMirrorSurfaceData == nullptr)
-	{
+	if (pMirrorSurfaceData == nullptr) {
 		warn("win_openxrmirror_init: Could not map view of file.");
 
 		CloseHandle(hMapFile);
@@ -291,48 +276,54 @@ static void win_openxrmirror_init(void *data, bool forced = false)
 	pMirrorSurfaceData->eyeIndex = context->righteye ? 1 : 0;
 
 	HRESULT hr;
-	D3D_FEATURE_LEVEL featureLevel;
+	D3D_FEATURE_LEVEL featureLevel[] = {D3D_FEATURE_LEVEL_11_1,
+					    D3D_FEATURE_LEVEL_11_0};
 	hr = D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, 0,
-			       //D3D11_CREATE_DEVICE_DEBUG |
-			       D3D11_CREATE_DEVICE_BGRA_SUPPORT, 0,
-		               0,
-			       D3D11_SDK_VERSION, context->dev11.put(),
-			       &featureLevel, context->ctx11.put());
+			       D3D11_CREATE_DEVICE_DEBUG |
+				       D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+			       0, 0, D3D11_SDK_VERSION, context->dev11.put(),
+			       featureLevel, context->ctx11.put());
 	if (FAILED(hr)) {
 		warn("win_openxrmirror_init: D3D11CreateDevice failed");
 		return;
 	}
 
-	sharedHandle = pMirrorSurfaceData->getHandle();
+	context->mirror_textures = std::vector<winrt::com_ptr<ID3D11Texture2D>>();
+	context->copy_tex_resource_mirrors = std::vector<winrt::com_ptr<IDXGIResource>>();
 
-	if (sharedHandle == NULL) {
-		warn("win_openxrmirror_init: Mirror surface handle is null");
-		return;
+	for (UINT i = 0; i < 3; ++i) {
+		sharedHandle = pMirrorSurfaceData->sharedHandle[i];
+
+		if (sharedHandle == NULL) {
+			warn("win_openxrmirror_init: Mirror surface handle is null");
+			return;
+		}
+
+		winrt::com_ptr<IDXGIResource> copy_tex_resource_mirror = nullptr;
+		hr = context->dev11->OpenSharedResource(
+			sharedHandle, __uuidof(IDXGIResource),
+			copy_tex_resource_mirror.put_void());
+		if (FAILED(hr) || !copy_tex_resource_mirror) {
+
+			warn("win_openxrmirror_init: OpenSharedResource failed");
+			return;
+		}
+		context->copy_tex_resource_mirrors.push_back(copy_tex_resource_mirror);
+
+		winrt::com_ptr<ID3D11Texture2D> mirror_texture;
+		hr = context->copy_tex_resource_mirrors[i]->QueryInterface(
+			__uuidof(ID3D11Texture2D),
+			mirror_texture.put_void());
+		if (FAILED(hr) || !mirror_texture) {
+			warn("win_openxrmirror_init: copy_tex_resource_mirror->QueryInterface failed");
+			return;
+		}
+		context->mirror_textures.push_back(mirror_texture);
 	}
-
-	context->copy_tex_resource_mirror = nullptr;
-	hr = context->dev11->OpenSharedResource(
-		sharedHandle, __uuidof(IDXGIResource),
-		(void **)(context->copy_tex_resource_mirror.put()));
-	if (FAILED(hr) || !context->copy_tex_resource_mirror) {
-			
-		warn("win_openxrmirror_init: OpenSharedResource failed");
-		return;
-	}
-
-	context->mirror_texture = nullptr;
-	hr = context->copy_tex_resource_mirror->QueryInterface(
-		__uuidof(ID3D11Texture2D),
-		(void **)(context->mirror_texture.put()));
-	if (FAILED(hr) || !context->mirror_texture) {
-		warn("win_openxrmirror_init: copy_tex_resource_mirror->QueryInterface failed");
-		return;
-	}
-
-	//copy_tex_resource_mirror->Release();
+	sharedHandle = pMirrorSurfaceData->sharedHandle[0];
 
 	D3D11_TEXTURE2D_DESC desc;
-	context->mirror_texture->GetDesc(&desc);
+	context->mirror_textures[0]->GetDesc(&desc);
 	if (desc.Width == 0 || desc.Height == 0) {
 		warn("win_openxrmirror_init: device width or height is 0");
 		return;
@@ -393,7 +384,6 @@ static void win_openxrmirror_init(void *data, bool forced = false)
 
 	context->initialized = true;
 
-	//blog(LOG_INFO, "~win_openxrmirror_init");
 }
 
 static const char *win_openxrmirror_get_name(void *unused)
@@ -404,7 +394,6 @@ static const char *win_openxrmirror_get_name(void *unused)
 
 static void win_openxrmirror_update(void *data, obs_data_t *settings)
 {
-	//blog(LOG_INFO, "win_openxrmirror_update");
 	struct win_openxrmirror *context = (win_openxrmirror *)data;
 	context->righteye = obs_data_get_bool(settings, "righteye");
 
@@ -422,7 +411,6 @@ static void win_openxrmirror_update(void *data, obs_data_t *settings)
 		win_openxrmirror_deinit(data);
 		win_openxrmirror_init(data);
 	}
-	//blog(LOG_INFO, "~win_openxrmirror_update");
 }
 
 static void win_openxrmirror_defaults(obs_data_t *settings)
@@ -449,7 +437,7 @@ static uint32_t win_openxrmirror_getheight(void *data)
 static void win_openxrmirror_show(void *data)
 {
 	win_openxrmirror_init(data,
-			true); // When showing do forced init without delay
+		true); // When showing do forced init without delay
 }
 
 static void win_openxrmirror_hide(void *data)
@@ -459,7 +447,6 @@ static void win_openxrmirror_hide(void *data)
 
 static void *win_openxrmirror_create(obs_data_t *settings, obs_source_t *source)
 {
-	//blog(LOG_INFO, "win_openxrmirror_create");
 	struct win_openxrmirror *context = (win_openxrmirror *)bzalloc(sizeof(win_openxrmirror));
 	context->source = source;
 
@@ -469,23 +456,21 @@ static void *win_openxrmirror_create(obs_data_t *settings, obs_source_t *source)
 	context->dev11 = nullptr;
 	context->texture = nullptr;
 	context->texCrop = nullptr;
-	context->mirror_texture = nullptr;
+	context->mirror_textures.clear();
+	context->copy_tex_resource_mirrors.clear();
 
 	context->width = context->height = 100;
 
 	win_openxrmirror_update(context, settings);
-	//blog(LOG_INFO, "~win_openxrmirror_create");
 	return context;
 }
 
 static void win_openxrmirror_destroy(void *data)
 {
-	//blog(LOG_INFO, "win_openxrmirror_destroy");
 	struct win_openxrmirror *context = (win_openxrmirror *)data;
 
 	win_openxrmirror_deinit(data);
 	bfree(context);
-	//blog(LOG_INFO, "~win_openxrmirror_destroy");
 }
 
 static void win_openxrmirror_render(void *data, gs_effect_t *effect)
@@ -495,9 +480,8 @@ static void win_openxrmirror_render(void *data, gs_effect_t *effect)
 
 	struct win_openxrmirror *context = (win_openxrmirror *)data;
 
-	if (context->initialized &&
-	    pMirrorSurfaceData && sharedHandle != pMirrorSurfaceData->getHandle())
-	{
+	if (context->initialized && pMirrorSurfaceData &&
+	    sharedHandle != pMirrorSurfaceData->sharedHandle[0]) {
 		win_openxrmirror_deinit(data);
 	}
 
@@ -521,9 +505,28 @@ static void win_openxrmirror_render(void *data, gs_effect_t *effect)
 		1,
 	};
 
+	static uint32_t currFrame = 0;
+	uint32_t latestFrame = currFrame;
+
+	if (pMirrorSurfaceData)
+		latestFrame = pMirrorSurfaceData->lastProcessedIndex;
+
+	if (currFrame > latestFrame || latestFrame - currFrame > 2) {
+		//blog(LOG_INFO, "Resetting currFrame");
+		currFrame = latestFrame;
+	}
+
+	if (latestFrame - currFrame > 1) {
+		//blog(LOG_INFO, "Skipping frame");
+		currFrame++;
+	}
+
 	context->ctx11->CopySubresourceRegion(context->texCrop.get(), 0, 0, 0, 0,
-		context->mirror_texture.get(), 0, &poksi);
+			context->mirror_textures[currFrame % 3].get(),
+					      0, &poksi);
 	context->ctx11->Flush();
+
+	currFrame++;
 
 	// Draw from shared mirror texture
 	effect = obs_get_base_effect(OBS_EFFECT_OPAQUE);
@@ -584,11 +587,11 @@ static bool crop_preset_flip(obs_properties_t *props, obs_property_t *p,
 {
 	bool flip = obs_data_get_bool(s, "righteye");
 	obs_property_set_description(obs_properties_get(props, "cropleft"),
-				     flip ? obs_module_text("Crop Left Percentage")
-					  : obs_module_text("Crop Right Percentage"));
+		flip ? obs_module_text("Crop Left Percentage")
+		     : obs_module_text("Crop Right Percentage"));
 	obs_property_set_description(obs_properties_get(props, "cropright"),
-				     flip ? obs_module_text("Crop Right Percentage")
-					  : obs_module_text("Crop Left Percentage"));
+		flip ? obs_module_text("Crop Right Percentage")
+		     : obs_module_text("Crop Left Percentage"));
 	return true;
 }
 

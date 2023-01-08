@@ -6,6 +6,8 @@
 #include <directxmath.h> // Matrix math functions and objects
 #include <d3dcompiler.h> // For compiling shaders! D3DCompile
 #include <d3d11_1.h>
+#include <d3d11_3.h>
+#include <d3d11_4.h>
 
 #pragma comment(lib, "d3dcompiler.lib")
 #pragma comment(lib, "d3d11.lib")
@@ -17,7 +19,7 @@ namespace {
         HRESULT res = (expression);                                                                                    \
         if (FAILED(res)) {                                                                                             \
             Log("DX Call failed with: 0x%08x\n", res);                                                                 \
-            Log("CHECK_DX failed on: " #expression, " DirectX error - see log for details\n");                         \
+            Log("CHECK_DX failed on: " #expression " DirectX error - see log for details\n");                         \
         }                                                                                                              \
     } while (0);
 } // namespace
@@ -159,24 +161,18 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
     }
 
     HANDLE hMapFile;
-    TCHAR szName[] = TEXT("OpenCompositeMirrorSurface");
-    char szName_[] = "OpenCompositeMirrorSurface";
+    TCHAR szName[] = TEXT("OpenXROBSMirrorSurface");
+    char szName_[] = "OpenXROBSMirrorSurface";
 
     struct MirrorSurfaceData {
+        uint32_t lastProcessedIndex = 0;
         uint32_t frameNumber = 0;
         uint32_t eyeIndex = 0;
-        HANDLE sharedHandle = nullptr;
-
-        void setHandle(HANDLE h) {
-            sharedHandle = h;
-        }
-
-        HANDLE getHandle() {
-            return sharedHandle;
-        }
+        HANDLE sharedHandle[3] = {NULL};
 
         void reset() {
-            sharedHandle = nullptr;
+            for (int i = 0; i < 3; ++i)
+                sharedHandle[i] = NULL;
         }
     };
 
@@ -313,23 +309,26 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
         _d3d11MirrorContext->Unmap(_quadVertexBuffer.Get(), 0);
     }
 
-    void D3D11Mirror::createSharedMirrorTexture(const XrSwapchain& swapchain, const ComPtr<ID3D11Texture2D>& tex) {
+    void D3D11Mirror::createSharedMirrorTexture(const XrSwapchain& swapchain,
+                                                const ComPtr<ID3D11Texture2D>& tex,
+                                                const DXGI_FORMAT format) {
+
+        SourceData& srcData = _sourceData[swapchain];
+        srcData = SourceData();
+
         ComPtr<IDXGIResource> pOtherResource = nullptr;
         CHECK_DX(tex->QueryInterface(IID_PPV_ARGS(&pOtherResource)));
 
         HANDLE sharedHandle;
         pOtherResource->GetSharedHandle(&sharedHandle);
 
-        MirrorData& data = _mirrorData[swapchain];
-        data = MirrorData();
-
         CHECK_DX(_d3d11MirrorDevice->OpenSharedResource(sharedHandle,
-                                                        IID_PPV_ARGS(&data._mirrorSharedResource)));
+                                                        IID_PPV_ARGS(&srcData._sharedResource)));
 
-        CHECK_DX(data._mirrorSharedResource->QueryInterface(IID_PPV_ARGS(&data._mirrorTexture)));
+        CHECK_DX(srcData._sharedResource->QueryInterface(IID_PPV_ARGS(&srcData._texture)));
 
         D3D11_TEXTURE2D_DESC srcDesc;
-        data._mirrorTexture->GetDesc(&srcDesc);
+        srcData._texture->GetDesc(&srcDesc);
 
         // Figure out what format we need to use
         DxgiFormatInfo info = {};
@@ -340,27 +339,27 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
         bool useLinearFormat = info.bpc > 8;
         DXGI_FORMAT type = useLinearFormat ? info.linear : info.srgb;
         D3D11_SHADER_RESOURCE_VIEW_DESC viewDesc;
-        viewDesc.Format = type;
+        viewDesc.Format = format;
         viewDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
         viewDesc.Texture2D.MipLevels = 1;
         viewDesc.Texture2D.MostDetailedMip = 0;
 
         CHECK_DX(_d3d11MirrorDevice->CreateShaderResourceView(
-            data._mirrorTexture.Get(), &viewDesc, data._quadTextureView.GetAddressOf()));
+            srcData._texture.Get(), &viewDesc, srcData._quadTextureView.GetAddressOf()));
     }
 
     void D3D11Mirror::createSharedMirrorTexture(const XrSwapchain& swapchain, const HANDLE& handle) {
-        MirrorData& data = _mirrorData[swapchain];
-        data = MirrorData();
+        SourceData& srcData = _sourceData[swapchain];
+        srcData = SourceData();
         ComPtr<ID3D11Device1> pDevice = nullptr;
 
         CHECK_DX(_d3d11MirrorDevice->QueryInterface(IID_PPV_ARGS(&pDevice)));
-        CHECK_DX(pDevice->OpenSharedResource1(handle, IID_PPV_ARGS(&data._mirrorTexture)));
+        CHECK_DX(pDevice->OpenSharedResource1(handle, IID_PPV_ARGS(&srcData._texture)));
 
         pDevice.Reset();
 
         D3D11_TEXTURE2D_DESC srcDesc;
-        data._mirrorTexture->GetDesc(&srcDesc);
+        srcData._texture->GetDesc(&srcDesc);
 
         // Figure out what format we need to use
         DxgiFormatInfo info = {};
@@ -377,7 +376,7 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
         viewDesc.Texture2D.MostDetailedMip = 0;
 
         CHECK_DX(_d3d11MirrorDevice->CreateShaderResourceView(
-            data._mirrorTexture.Get(), &viewDesc, data._quadTextureView.GetAddressOf()));
+            srcData._texture.Get(), &viewDesc, srcData._quadTextureView.GetAddressOf()));
     }
 
     bool D3D11Mirror::enabled() const {
@@ -386,6 +385,7 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
 
     void D3D11Mirror::flush() {
         _d3d11MirrorContext->Flush();
+        _pMirrorSurfaceData->lastProcessedIndex = _frameCounter;
         if (_targetView) {
             _d3d11MirrorContext->OMSetRenderTargets(1, _targetView.GetAddressOf(), nullptr);
             float clearRGBA[4] = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -408,22 +408,22 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
     void D3D11Mirror::Blend(const XrCompositionLayerProjectionView* view,
                             const XrCompositionLayerQuad* quad,
                             const DXGI_FORMAT format) {
-        auto it = _mirrorData.find(quad->subImage.swapchain);
-        if (it == _mirrorData.end())
+        auto it = _sourceData.find(quad->subImage.swapchain);
+        if (it == _sourceData.end())
             return;
 
-        auto src = it->second._mirrorTexture;
+        auto srcTex = it->second._texture;
 
-        if (!src)
+        if (!srcTex)
             return;
 
         checkCopyTex(view->subImage.imageRect.extent.width, view->subImage.imageRect.extent.height, format);
 
-        D3D11_TEXTURE2D_DESC srcDesc;
-
-        src->GetDesc(&srcDesc);
-        if (_copyTexture == nullptr || _mirrorTexture == nullptr)
+        if (_compositorTexture == nullptr || _mirrorTextures.size() == 0)
             return;
+
+        D3D11_TEXTURE2D_DESC srcDesc;
+        srcTex->GetDesc(&srcDesc);
 
         // Figure out what format we need to use
         DxgiFormatInfo info = {};
@@ -459,9 +459,9 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
         pBuffer[3 * row + 5] = (float)(quad->subImage.imageRect.offset.y + quad->subImage.imageRect.extent.height) /
                                 (float)srcDesc.Height;
 
-        auto _quadTextureView = it->second._quadTextureView;
+        auto quadTextureView = it->second._quadTextureView;
 
-        _d3d11MirrorContext->PSSetShaderResources(0, 1, _quadTextureView.GetAddressOf());
+        _d3d11MirrorContext->PSSetShaderResources(0, 1, quadTextureView.GetAddressOf());
 
         float blend_factor[4] = {1.f, 1.f, 1.f, 1.f};
         _d3d11MirrorContext->OMSetBlendState(_quadBlendState.Get(), blend_factor, 0xffffffff);
@@ -483,42 +483,28 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
         // Set up camera matrices based on OpenXR's predicted viewpoint information
         XMMATRIX mat_projection = d3dXrProjection(view->fov, 0.05f, 100.0f);
 
-        XrPosef viewPose = view->pose;
-
+        const XrPosef *viewPose = &view->pose;
         if (_spaceInfo.count(quad->space) &&
             _spaceInfo[quad->space].referenceSpaceType == XR_REFERENCE_SPACE_TYPE_VIEW) {
-            viewPose = _spaceInfo[quad->space].poseInReferenceSpace;
+            viewPose = &_spaceInfo[quad->space].poseInReferenceSpace;
         }
 
         XMMATRIX mat_view =
             XMMatrixInverse(nullptr,
                             XMMatrixAffineTransformation(DirectX::g_XMOne,
-                                                            DirectX::g_XMZero,
-                                                            XMLoadFloat4((XMFLOAT4*)&viewPose.orientation),
-                                                            XMLoadFloat3((XMFLOAT3*)&viewPose.position)));
+                                                         DirectX::g_XMZero,
+                                                         XMLoadFloat4((XMFLOAT4*)&viewPose->orientation),
+                                                         XMLoadFloat3((XMFLOAT3*)&viewPose->position)));
 
         // Put camera matrices into the shader's constant buffer
         quad_transform_buffer_t transform_buffer;
         XMStoreFloat4x4(&transform_buffer.viewproj, XMMatrixTranspose(mat_view * mat_projection));
 
-        float wScale = quad->size.width * (float)srcDesc.Width /
-                        (float)(quad->subImage.imageRect.extent.width - quad->subImage.imageRect.offset.x);
-        float hScale = quad->size.height * (float)srcDesc.Height /
-                        (float)(quad->subImage.imageRect.extent.height - quad->subImage.imageRect.offset.y);
-
-        XrPosef pose = {{1.f, 0.f, 0.f, 0.f}, {0.0f, 0.0f, -0.5f}};
-        pose = quad->pose;
-        if (pose.orientation.x == 0.f && pose.orientation.y == 0.f && pose.orientation.z == 0.f &&
-            pose.orientation.w == 1.f) {
-            pose.orientation = {1.f, 0.f, 0.f, 0.f};
-        }
-
-        XMVECTORF32 scalingVector = {quad->size.width, -1.0f * quad->size.height, 1.f, 1.f};
-        XMVECTORF32 rotOrigin = {0.f, 0.f, 0.f, 1.f};
-        XMVECTORF32 quatRot = {pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w};
-        XMVECTORF32 trans = {pose.position.x, pose.position.y, pose.position.z, 1.f};
-
-        XMMATRIX mat_model = XMMatrixAffineTransformation(scalingVector, rotOrigin, quatRot, trans);
+        XMFLOAT4 scalingVector = {quad->size.width, 1.0f * quad->size.height, 1.f, 1.f};
+        XMMATRIX mat_model = XMMatrixAffineTransformation(XMLoadFloat4(&scalingVector),
+                                                          DirectX::g_XMZero,
+                                                          XMLoadFloat4((XMFLOAT4*)&quad->pose.orientation),
+                                                          XMLoadFloat3((XMFLOAT3*)&quad->pose.position));
 
         // Update the shader's constant buffer with the transform matrix info, and then draw the quad
         XMStoreFloat4x4(&transform_buffer.world, XMMatrixTranspose(mat_model));
@@ -529,12 +515,12 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
     void D3D11Mirror::copyPerspectiveTex(const XrRect2Di & imgRect, 
                                          const DXGI_FORMAT format, 
                                          const XrSwapchain & swapchain) {
-        auto it = _mirrorData.find(swapchain);
-        if (it == _mirrorData.end())
+        auto it = _sourceData.find(swapchain);
+        if (it == _sourceData.end())
             return;
 
         checkCopyTex(imgRect.extent.width, imgRect.extent.height, format);
-        if (_copyTexture) {
+        if (_compositorTexture) {
             D3D11_BOX sourceRegion;
             sourceRegion.left = imgRect.offset.x;
             sourceRegion.right = imgRect.offset.x + imgRect.extent.width;
@@ -543,29 +529,38 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
             sourceRegion.front = 0;
             sourceRegion.back = 1;
             _d3d11MirrorContext->CopySubresourceRegion(
-                _copyTexture.Get(), 0, 0, 0, 0, it->second._mirrorTexture.Get(), 0, &sourceRegion);
+                _compositorTexture.Get(), 0, 0, 0, 0, it->second._texture.Get(), 0, &sourceRegion);
         }
+        //Log("2\n");
     }
 
     void D3D11Mirror::checkCopyTex(const uint32_t width, 
                                    const uint32_t height, 
                                    const DXGI_FORMAT format) {
-        if (_copyTexture) {
+        if (_compositorTexture) {
             D3D11_TEXTURE2D_DESC srcDesc;
-            _copyTexture->GetDesc(&srcDesc);
+            _compositorTexture->GetDesc(&srcDesc);
             if (srcDesc.Width != width || srcDesc.Height != height) {
-                _copyTexture = nullptr;
-                _mirrorTexture = nullptr;
+                _compositorTexture = nullptr;
+                _mirrorTextures.clear();
             }
         }
-        if (_copyTexture == nullptr) {
+        if (_compositorTexture == nullptr) {
+            DXGI_FORMAT renderFmt = format;
+            DxgiFormatInfo info = {};
+            if (GetFormatInfo(renderFmt, info)) {
+                bool linear = info.bpc > 8;
+                Log("Use linear = %d Linear = %d sRGB = %d\n", linear, info.linear, info.srgb);
+                renderFmt = linear ? info.linear : info.srgb;
+            }
+
             D3D11_TEXTURE2D_DESC desc;
             ZeroMemory(&desc, sizeof(desc));
             desc.Width = width;
             desc.Height = height;
             desc.MipLevels = 1;
             desc.ArraySize = 1;
-            desc.Format = format;
+            desc.Format = renderFmt;
             desc.SampleDesc.Count = 1;
             desc.SampleDesc.Quality = 0;
             desc.Usage = D3D11_USAGE_DEFAULT;
@@ -575,19 +570,24 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
 
             Log("Creating mirror textures w %u h %u f %d\n", desc.Width, desc.Height, format);
 
-            CHECK_DX(_d3d11MirrorDevice->CreateTexture2D(&desc, NULL, _copyTexture.ReleaseAndGetAddressOf()));
-            CHECK_DX(_d3d11MirrorDevice->CreateTexture2D(&desc, NULL, _mirrorTexture.ReleaseAndGetAddressOf()));
+            CHECK_DX(_d3d11MirrorDevice->CreateTexture2D(&desc, NULL, _compositorTexture.ReleaseAndGetAddressOf()));
+            desc.Format = info.linear;
+            uint32_t i = 0;
+            _mirrorTextures.resize(3, nullptr);
+            for (auto&& tex : _mirrorTextures) {
+                CHECK_DX(_d3d11MirrorDevice->CreateTexture2D(&desc, NULL, tex.ReleaseAndGetAddressOf()));
 
-            ComPtr<IDXGIResource> pOtherResource = nullptr;
-            CHECK_DX(_mirrorTexture->QueryInterface(IID_PPV_ARGS(&pOtherResource)));
+                ComPtr<IDXGIResource> pOtherResource = nullptr;
+                CHECK_DX(tex->QueryInterface(IID_PPV_ARGS(&pOtherResource)));
 
-            HANDLE sharedHandle;
-            pOtherResource->GetSharedHandle(&sharedHandle);
-            _pMirrorSurfaceData->setHandle(sharedHandle);
-            Log("Shared handle: 0x%p\n", sharedHandle);
+                HANDLE sharedHandle;
+                pOtherResource->GetSharedHandle(&sharedHandle);
+                _pMirrorSurfaceData->sharedHandle[i++] = sharedHandle;
+                Log("Shared handle: 0x%p\n", sharedHandle);
+            }
 
             D3D11_TEXTURE2D_DESC color_desc;
-            _copyTexture->GetDesc(&color_desc);
+            _compositorTexture->GetDesc(&color_desc);
 
             Log("Texture description: %d x %d Format %d\n", color_desc.Width, color_desc.Height, color_desc.Format);
 
@@ -598,14 +598,16 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
             targetDesc.Format = color_desc.Format;
             targetDesc.Texture2D.MipSlice = 0;
             ID3D11RenderTargetView* rtv;
-            CHECK_DX(_d3d11MirrorDevice->CreateRenderTargetView(_copyTexture.Get(), &targetDesc, &rtv));
+            CHECK_DX(_d3d11MirrorDevice->CreateRenderTargetView(_compositorTexture.Get(), &targetDesc, &rtv));
             _targetView.Attach(rtv);
         }
     }
 
-    void D3D11Mirror::copyToMIrror() {
-        if (_copyTexture && _mirrorTexture) {
-            _d3d11MirrorContext->CopyResource(_mirrorTexture.Get(), _copyTexture.Get());
+    void D3D11Mirror::copyToMirror() {
+        _frameCounter = _frameCounter + 1;
+        auto& tex = _mirrorTextures[_frameCounter % 3];
+        if (_compositorTexture && tex) {
+            _d3d11MirrorContext->CopyResource(tex.Get(), _compositorTexture.Get());
         }
     }
 

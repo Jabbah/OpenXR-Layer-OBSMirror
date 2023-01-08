@@ -265,6 +265,7 @@ namespace {
                     newSwapchain._xrSwapchain = *swapchain;
                     newSwapchain._createInfo = chainCreateInfo;
                     newSwapchain._aquiredIndex = -1;
+                    newSwapchain._releasedIndex = -1;
                     newSwapchain._dx11SurfaceImages.clear();
                     newSwapchain._dx12SurfaceImages.clear();
                     // newSwapchain._xrSession = session;
@@ -334,7 +335,7 @@ namespace {
 #endif
                     if (_xrGraphicsAPI == XR_TYPE_GRAPHICS_BINDING_D3D11_KHR) {
                         swapchainState._dx11SurfaceImages.resize(*imageCountOutput);
-                        for (int i = 0; i < *imageCountOutput; ++i) {
+                        for (uint32_t i = 0; i < *imageCountOutput; ++i) {
                             swapchainState._dx11SurfaceImages[i] =
                                 reinterpret_cast<XrSwapchainImageD3D11KHR*>(images)[i];
                         }
@@ -367,7 +368,7 @@ namespace {
                             CHECK_DX(_d3d11Device->CreateTexture2D(
                                 &desc, NULL, swapchainState._dx11LastTexture.ReleaseAndGetAddressOf()));
 
-                            _mirror->createSharedMirrorTexture(swapchain, swapchainState._dx11LastTexture);
+                            _mirror->createSharedMirrorTexture(swapchain, swapchainState._dx11LastTexture, desc.Format);
                         }
                     } else if (_xrGraphicsAPI == XR_TYPE_GRAPHICS_BINDING_D3D12_KHR) {
                         for (auto event : swapchainState._frameFenceEvents) {
@@ -384,7 +385,7 @@ namespace {
                         swapchainState._frameFences.resize(*imageCountOutput);
                         swapchainState._fenceValues.resize(*imageCountOutput);
 
-                        for (int i = 0; i < *imageCountOutput; ++i) {
+                        for (uint32_t i = 0; i < *imageCountOutput; ++i) {
                             swapchainState._dx12SurfaceImages[i] =
                                 reinterpret_cast<XrSwapchainImageD3D12KHR*>(images)[i];
 
@@ -500,8 +501,7 @@ namespace {
             return result;
         }
 
-        XrResult xrReleaseSwapchainImage(XrSwapchain swapchain,
-                                         const XrSwapchainImageReleaseInfo* releaseInfo) override {
+        XrResult updateSwapChainImages(XrSwapchain swapchain, const XrSwapchainImageReleaseInfo* releaseInfo, bool doXRcall) {
             if (_mirror && _mirror->enabled() && isSwapchainHandled(swapchain)) {
                 auto& swapchainState = _swapchains[swapchain];
                 uint32_t idx = swapchainState._aquiredIndex;
@@ -510,10 +510,10 @@ namespace {
                     auto* textPtr = swapchainState._dx11SurfaceImages[idx].texture;
                     if (swapchainState._dx11LastTexture) {
                         _d3d11Context->CopyResource(swapchainState._dx11LastTexture.Get(), textPtr);
+                        swapchainState._releasedIndex = swapchainState._aquiredIndex;
                     }
-                }
-                else if (_xrGraphicsAPI == XR_TYPE_GRAPHICS_BINDING_D3D12_KHR &&
-                    !swapchainState._dx12SurfaceImages.empty()) {
+                } else if (_xrGraphicsAPI == XR_TYPE_GRAPHICS_BINDING_D3D12_KHR &&
+                           !swapchainState._dx12SurfaceImages.empty()) {
                     auto* textPtr = swapchainState._dx12SurfaceImages[idx].texture;
                     if (swapchainState._dx12LastTexture) {
                         WaitForFence(swapchainState._frameFences[idx].Get(),
@@ -525,12 +525,16 @@ namespace {
                         swapchainState._commandLists[idx]->Close();
                         ID3D12CommandList* set[] = {swapchainState._commandLists[idx].Get()};
                         _d3d12CommandQueue->ExecuteCommandLists(1, set);
+                        swapchainState._releasedIndex = swapchainState._aquiredIndex;
                     }
                 }
             }
-            const XrResult result = OpenXrApi::xrReleaseSwapchainImage(swapchain, releaseInfo);
+            XrResult result;
+            if (doXRcall)
+                result = OpenXrApi::xrReleaseSwapchainImage(swapchain, releaseInfo);
+
             if (_mirror && _mirror->enabled() && isSwapchainHandled(swapchain) &&
-                _xrGraphicsAPI == XR_TYPE_GRAPHICS_BINDING_D3D12_KHR){
+                _xrGraphicsAPI == XR_TYPE_GRAPHICS_BINDING_D3D12_KHR) {
                 auto& swapchainState = _swapchains[swapchain];
                 uint32_t idx = swapchainState._aquiredIndex;
                 if (!swapchainState._dx12SurfaceImages.empty()) {
@@ -541,6 +545,11 @@ namespace {
                 }
             }
             return result;
+        }
+
+        XrResult xrReleaseSwapchainImage(XrSwapchain swapchain,
+                                         const XrSwapchainImageReleaseInfo* releaseInfo) override {
+            return updateSwapChainImages(swapchain, releaseInfo, true);
         }
 
         XrResult xrLocateViews(XrSession session,
@@ -557,7 +566,7 @@ namespace {
                 if (siPtr && siPtr->referenceSpaceType == XR_REFERENCE_SPACE_TYPE_LOCAL) {
                     if (_projectionViews.size() != *viewCountOutput)
                         _projectionViews.resize(*viewCountOutput, {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW});
-                    for (int nView = 0; nView < *viewCountOutput; nView++) {
+                    for (uint32_t nView = 0; nView < *viewCountOutput; nView++) {
                         _projectionViews[nView].fov = views[nView].fov;
 
                         XrPosef pose = views[nView].pose;
@@ -637,6 +646,11 @@ namespace {
                                 reinterpret_cast<const XrCompositionLayerQuad*>(hdr);
                             if (isSwapchainHandled(quadLayer->subImage.swapchain)) {
                                 auto& swapchainState = _swapchains[quadLayer->subImage.swapchain];
+                                if (swapchainState._aquiredIndex != swapchainState._releasedIndex) {
+                                    // Probably missed an update to swap chain whilst waiting for OBS plugin
+                                    // Swapchains don't need to be updated every frame so just copy the last one aquired
+                                    updateSwapChainImages(quadLayer->subImage.swapchain, nullptr, false);
+                                }
                                 if (swapchainState._dx11LastTexture || swapchainState._dx12LastTexture) {
                                     if (projView) {
                                         _mirror->Blend(
@@ -646,7 +660,7 @@ namespace {
                             }
                         }
                     }
-                    _mirror->copyToMIrror();
+                    _mirror->copyToMirror();
                 }
             }
 
@@ -672,6 +686,7 @@ namespace {
             std::vector<XrSwapchainImageD3D11KHR> _dx11SurfaceImages;
             std::vector<XrSwapchainImageD3D12KHR> _dx12SurfaceImages;
             uint32_t _aquiredIndex = -1;
+            uint32_t _releasedIndex = -1;
             ComPtr<ID3D11Texture2D> _dx11LastTexture = nullptr;
             ComPtr<ID3D12Resource> _dx12LastTexture = nullptr;
             std::vector<ComPtr<ID3D12GraphicsCommandList>> _commandLists;
