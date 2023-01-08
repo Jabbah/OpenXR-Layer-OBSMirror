@@ -27,7 +27,7 @@ To uninstall OpenXR Layer right click on Uninstall-Layer.ps1 and select "Run wit
 
 
 ## Install the OBS plugin:
-Copy the files win-openxr.dll and win-openxr.pdb to your OBS plugins dir e.g. C:\Program Files\obs-studio\obs-plugins\64bit
+Copy the directories data and obs-plugins from the OBS_Plugin dir to your OBS install dir e.g. C:\Program Files\obs-studio\
 
 The plugin should appear in the OBS sources list:
 
