@@ -2,12 +2,14 @@
 #include "dx11mirror.h"
 #include "log.h"
 #include "util.h"
+#include "layer.h"
 
 #include <directxmath.h> // Matrix math functions and objects
 #include <d3dcompiler.h> // For compiling shaders! D3DCompile
 #include <d3d11_1.h>
 #include <d3d11_3.h>
 #include <d3d11_4.h>
+#include <xr_linear.h>
 
 #pragma comment(lib, "d3dcompiler.lib")
 #pragma comment(lib, "d3d11.lib")
@@ -161,7 +163,7 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
     }
 
     HANDLE hMapFile;
-    TCHAR szName[] = TEXT("OpenXROBSMirrorSurface");
+    WCHAR szName[] = L"OpenXROBSMirrorSurface";
     char szName_[] = "OpenXROBSMirrorSurface";
 
     struct MirrorSurfaceData {
@@ -291,9 +293,6 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
         _d3d11MirrorContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         _d3d11MirrorContext->IASetInputLayout(_quadShaderLayout.Get());
 
-        CHECK_DX(_d3d11MirrorContext->Map(
-            _quadVertexBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &_mappedQuadVertexBuffer));
-
         createMirrorSurface();
     }
 
@@ -305,8 +304,6 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
             _pMirrorSurfaceData = nullptr;
             CloseHandle(hMapFile);
         }
-
-        _d3d11MirrorContext->Unmap(_quadVertexBuffer.Get(), 0);
     }
 
     void D3D11Mirror::createSharedMirrorTexture(const XrSwapchain& swapchain,
@@ -393,11 +390,15 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
         }
     }
 
-    void D3D11Mirror::addSpace(const XrSpace& space, const XrReferenceSpaceCreateInfo* createInfo) {
+    void D3D11Mirror::addSpace(const XrSpace space, const XrReferenceSpaceCreateInfo* createInfo) {
         _spaceInfo[space] = *createInfo;
     }
 
-    const XrReferenceSpaceCreateInfo* D3D11Mirror::getSpaceInfo(const XrSpace& space) const {
+    void D3D11Mirror::removeSpace(const XrSpace space) {
+        _spaceInfo.erase(space);
+    }
+
+    const XrReferenceSpaceCreateInfo* D3D11Mirror::getSpaceInfo(const XrSpace space) const {
         auto it = _spaceInfo.find(space);
         if (it != _spaceInfo.end())
             return &it->second;
@@ -407,7 +408,9 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
 
     void D3D11Mirror::Blend(const XrCompositionLayerProjectionView* view,
                             const XrCompositionLayerQuad* quad,
-                            const DXGI_FORMAT format) {
+                            const DXGI_FORMAT format,
+                            const XrSpace viewSpace,
+                            const XrTime displayTime) {
         auto it = _sourceData.find(quad->subImage.swapchain);
         if (it == _sourceData.end())
             return;
@@ -438,6 +441,9 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
         viewDesc.Texture2D.MipLevels = 1;
         viewDesc.Texture2D.MostDetailedMip = 0;
 
+        CHECK_DX(
+            _d3d11MirrorContext->Map(_quadVertexBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &_mappedQuadVertexBuffer));
+
         float* pBuffer = (float*)_mappedQuadVertexBuffer.pData;
         memcpy(pBuffer, quad_verts, sizeof(quad_verts));
 
@@ -458,6 +464,8 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
                                 (float)srcDesc.Width;
         pBuffer[3 * row + 5] = (float)(quad->subImage.imageRect.offset.y + quad->subImage.imageRect.extent.height) /
                                 (float)srcDesc.Height;
+
+        _d3d11MirrorContext->Unmap(_quadVertexBuffer.Get(), 0);
 
         auto quadTextureView = it->second._quadTextureView;
 
@@ -482,29 +490,33 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
 
         // Set up camera matrices based on OpenXR's predicted viewpoint information
         XMMATRIX mat_projection = d3dXrProjection(view->fov, 0.05f, 100.0f);
-
-        const XrPosef *viewPose = &view->pose;
-        if (_spaceInfo.count(quad->space) &&
-            _spaceInfo[quad->space].referenceSpaceType == XR_REFERENCE_SPACE_TYPE_VIEW) {
-            viewPose = &_spaceInfo[quad->space].poseInReferenceSpace;
-        }
-
         XMMATRIX mat_view =
             XMMatrixInverse(nullptr,
                             XMMatrixAffineTransformation(DirectX::g_XMOne,
                                                          DirectX::g_XMZero,
-                                                         XMLoadFloat4((XMFLOAT4*)&viewPose->orientation),
-                                                         XMLoadFloat3((XMFLOAT3*)&viewPose->position)));
+                                                         XMLoadFloat4((XMFLOAT4*)&view->pose.orientation),
+                                                         XMLoadFloat3((XMFLOAT3*)&view->pose.position)));
 
         // Put camera matrices into the shader's constant buffer
         quad_transform_buffer_t transform_buffer;
         XMStoreFloat4x4(&transform_buffer.viewproj, XMMatrixTranspose(mat_view * mat_projection));
 
-        XMFLOAT4 scalingVector = {quad->size.width, 1.0f * quad->size.height, 1.f, 1.f};
+        XMFLOAT4 scalingVector = {quad->size.width, quad->size.height, 1.f, 1.f};
         XMMATRIX mat_model = XMMatrixAffineTransformation(XMLoadFloat4(&scalingVector),
                                                           DirectX::g_XMZero,
                                                           XMLoadFloat4((XMFLOAT4*)&quad->pose.orientation),
                                                           XMLoadFloat3((XMFLOAT3*)&quad->pose.position));
+
+        // Account for quad layer space
+        XrSpaceVelocity velocity{XR_TYPE_SPACE_VELOCITY};
+        XrSpaceLocation location{XR_TYPE_SPACE_LOCATION, &velocity};
+        layer_OBSMirror::GetInstance()->xrLocateSpace(quad->space, viewSpace, displayTime, &location);
+        XMMATRIX mat_space = XMMatrixAffineTransformation(DirectX::g_XMOne,
+                                                          DirectX::g_XMZero,
+                                                          XMLoadFloat4((XMFLOAT4*)&location.pose.orientation),
+                                                          XMLoadFloat3((XMFLOAT3*)&location.pose.position));
+
+        mat_model = XMMatrixMultiply(mat_model, mat_space);
 
         // Update the shader's constant buffer with the transform matrix info, and then draw the quad
         XMStoreFloat4x4(&transform_buffer.world, XMMatrixTranspose(mat_model));
@@ -531,7 +543,6 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
             _d3d11MirrorContext->CopySubresourceRegion(
                 _compositorTexture.Get(), 0, 0, 0, 0, it->second._texture.Get(), 0, &sourceRegion);
         }
-        //Log("2\n");
     }
 
     void D3D11Mirror::checkCopyTex(const uint32_t width, 
@@ -634,12 +645,12 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
 
     void D3D11Mirror::createMirrorSurface() {
         Log("Mapping file %s.\n", szName_);
-        hMapFile = CreateFileMappingA(INVALID_HANDLE_VALUE,      // use paging file
+        hMapFile = CreateFileMappingW(INVALID_HANDLE_VALUE,      // use paging file
                                       NULL,                      // default security
                                       PAGE_READWRITE,            // read/write access
                                       0,                         // maximum object size (high-order DWORD)
                                       sizeof(MirrorSurfaceData), // maximum object size (low-order DWORD)
-                                      szName_);                  // name of mapping object
+                                      szName);                  // name of mapping object
 
         if (hMapFile == NULL) {
             Log("Could not create file mapping object (%d).\n", GetLastError());

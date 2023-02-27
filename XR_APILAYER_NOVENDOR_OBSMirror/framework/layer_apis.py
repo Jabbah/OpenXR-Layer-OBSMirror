@@ -9,7 +9,8 @@ override_functions = [
     "xrLocateViews",
     "xrBeginFrame",
     "xrEndFrame",
-    "xrCreateReferenceSpace"
+    "xrCreateReferenceSpace",
+    "xrDestroySpace"
 ]
 
 # The list of OpenXR functions our layer will use from the runtime.
@@ -18,7 +19,8 @@ requested_functions = [
     "xrGetInstanceProperties",
     "xrGetSystemProperties",
     "xrGetSystem",
-    "xrEnumerateViewConfigurationViews"
+    "xrEnumerateViewConfigurationViews",
+    "xrLocateSpace",
 ]
 
 # The list of OpenXR extensions our layer will either override or use.

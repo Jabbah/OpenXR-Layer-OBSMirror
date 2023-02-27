@@ -599,6 +599,14 @@ namespace {
             return res;
         }
 
+        XrResult xrDestroySpace(XrSpace space) {
+            XrResult res = OpenXrApi::xrDestroySpace(space);
+            if (_mirror && XR_SUCCEEDED(res)) {
+                _mirror->removeSpace(space);
+            }
+            return res;
+        }
+
         XrResult xrBeginFrame(XrSession session, const XrFrameBeginInfo* frameBeginInfo) override {
             if (_mirror)
                 _mirror->flush();
@@ -618,6 +626,7 @@ namespace {
 
                     auto& sessionState = _sessions[session];
                     const XrCompositionLayerProjectionView* projView = &_projectionViews[0];
+                    const XrCompositionLayerProjection* projLayer = nullptr;
 
                     _projectionViews[0].subImage.imageRect.offset.x = 0;
                     _projectionViews[0].subImage.imageRect.offset.y = 0;
@@ -628,8 +637,7 @@ namespace {
                     for (uint32_t i = 0; i < count; ++i) {
                         const XrCompositionLayerBaseHeader* hdr = frameEndInfo->layers[i];
                         if (hdr->type == XR_TYPE_COMPOSITION_LAYER_PROJECTION) {
-                            const XrCompositionLayerProjection* projLayer =
-                                reinterpret_cast<const XrCompositionLayerProjection*>(hdr);
+                            projLayer = reinterpret_cast<const XrCompositionLayerProjection*>(hdr);
                             if (projLayer->viewCount == 2) {
                                 projView = &projLayer->views[_mirror->getEyeIndex()];
                                 if (isSwapchainHandled(projView->subImage.swapchain)) {
@@ -653,8 +661,11 @@ namespace {
                                 }
                                 if (swapchainState._dx11LastTexture || swapchainState._dx12LastTexture) {
                                     if (projView) {
-                                        _mirror->Blend(
-                                            projView, quadLayer, (DXGI_FORMAT)swapchainState._createInfo.format);
+                                        _mirror->Blend(projView,
+                                                       quadLayer,
+                                                       (DXGI_FORMAT)swapchainState._createInfo.format,
+                                                       projLayer ? projLayer->space : nullptr,
+                                                       frameEndInfo->displayTime);
                                     }
                                 }
                             }

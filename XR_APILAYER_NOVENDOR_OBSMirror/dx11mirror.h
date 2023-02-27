@@ -30,13 +30,17 @@ namespace Mirror
 
         void flush();
 
-        void addSpace(const XrSpace& space, const XrReferenceSpaceCreateInfo* createInfo);
+        void addSpace(const XrSpace space, const XrReferenceSpaceCreateInfo* createInfo);
 
-        const XrReferenceSpaceCreateInfo* getSpaceInfo(const XrSpace& space) const;
+        void removeSpace(const XrSpace space);
+
+        const XrReferenceSpaceCreateInfo* getSpaceInfo(const XrSpace space) const;
 
         void Blend(const XrCompositionLayerProjectionView* view,
                    const XrCompositionLayerQuad* quad,
-                   const DXGI_FORMAT format);
+                   const DXGI_FORMAT format,
+                   const XrSpace space,
+                   const XrTime displayTime);
 
         void copyPerspectiveTex(const XrRect2Di& imgRect, const DXGI_FORMAT format, const XrSwapchain& swapchain);
 
