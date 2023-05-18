@@ -26,7 +26,7 @@
 #include <tchar.h>
 
 #define BUF_SIZE 256
-char szName[] = "OpenXROBSMirrorSurface";
+WCHAR szName[] = L"OpenXROBSMirrorSurface";
 HANDLE hMapFile = NULL;
 HANDLE sharedHandle;
 
@@ -249,7 +249,7 @@ static void win_openxrmirror_init(void *data, bool forced = false)
 
 	context->lastCheckTick = GetTickCount64();
 
-	hMapFile = OpenFileMappingA(FILE_MAP_WRITE |
+	hMapFile = OpenFileMappingW(FILE_MAP_WRITE |
 					    FILE_MAP_READ, // read/write access
 				    FALSE,   // do not inherit the name
 				    szName); // name of mapping object
@@ -279,7 +279,9 @@ static void win_openxrmirror_init(void *data, bool forced = false)
 	D3D_FEATURE_LEVEL featureLevel[] = {D3D_FEATURE_LEVEL_11_1,
 					    D3D_FEATURE_LEVEL_11_0};
 	hr = D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, 0,
+#ifdef _DEBUG
 			       D3D11_CREATE_DEVICE_DEBUG |
+#endif
 				       D3D11_CREATE_DEVICE_BGRA_SUPPORT,
 			       0, 0, D3D11_SDK_VERSION, context->dev11.put(),
 			       featureLevel, context->ctx11.put());
@@ -379,7 +381,10 @@ static void win_openxrmirror_init(void *data, bool forced = false)
 
 	obs_enter_graphics();
 	gs_texture_destroy(context->texture);
+
+#pragma warning(suppress : 4311 4302)
 	context->texture = gs_texture_open_shared(reinterpret_cast<uint32_t>(handle));
+
 	obs_leave_graphics();
 
 	context->initialized = true;
@@ -522,7 +527,7 @@ static void win_openxrmirror_render(void *data, gs_effect_t *effect)
 	}
 
 	context->ctx11->CopySubresourceRegion(context->texCrop.get(), 0, 0, 0, 0,
-			context->mirror_textures[currFrame % 3].get(),
+			context->mirror_textures[0].get(),
 					      0, &poksi);
 	context->ctx11->Flush();
 
@@ -626,7 +631,7 @@ static obs_properties_t *win_openxrmirror_properties(void *data)
 				    OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
 	obs_property_list_add_int(p, "none", 0);
 	int i = 1;
-	for (const auto c : croppresets) {
+	for (const auto &c : croppresets) {
 		obs_property_list_add_int(p, c.name, i++);
 	}
 	obs_property_set_modified_callback(p, crop_preset_changed);

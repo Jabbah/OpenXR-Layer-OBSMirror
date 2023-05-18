@@ -616,7 +616,7 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
 
     void D3D11Mirror::copyToMirror() {
         _frameCounter = _frameCounter + 1;
-        auto& tex = _mirrorTextures[_frameCounter % 3];
+        auto& tex = _mirrorTextures[0];
         if (_compositorTexture && tex) {
             _d3d11MirrorContext->CopyResource(tex.Get(), _compositorTexture.Get());
         }
