@@ -46,7 +46,7 @@ HANDLE sharedHandle;
 struct MirrorSurfaceData {
 	uint32_t lastProcessedIndex = 0;
 	uint32_t frameNumber = 0;
-	uint32_t eyeIndex = 0;
+	uint32_t eyeIndex = -1;
 	HANDLE sharedHandle[3] = {NULL};
 
 	void reset()
@@ -75,7 +75,8 @@ std::vector<croppreset> croppresets;
 struct win_openxrmirror {
 	obs_source_t *source;
 
-	bool righteye;
+	//bool righteye;
+	int eyeIndex=-1;
 	int croppreset;
 	crop crop;
 
@@ -273,7 +274,7 @@ static void win_openxrmirror_init(void *data, bool forced = false)
 		return;
 	}
 
-	pMirrorSurfaceData->eyeIndex = context->righteye ? 1 : 0;
+	pMirrorSurfaceData->eyeIndex = context->eyeIndex;
 
 	HRESULT hr;
 	D3D_FEATURE_LEVEL featureLevel[] = {D3D_FEATURE_LEVEL_11_1,
@@ -400,15 +401,24 @@ static const char *win_openxrmirror_get_name(void *unused)
 static void win_openxrmirror_update(void *data, obs_data_t *settings)
 {
 	struct win_openxrmirror *context = (win_openxrmirror *)data;
-	context->righteye = obs_data_get_bool(settings, "righteye");
+	context->eyeIndex = -1; //obs_data_get_bool(settings, "righteye");
 
-	if (context->righteye) {
-		context->crop.left = obs_data_get_double(settings, "cropleft");
-		context->crop.right = obs_data_get_double(settings, "cropright");
-	} else {
-		context->crop.left = obs_data_get_double(settings, "cropright");
-		context->crop.right = obs_data_get_double(settings, "cropleft");
+	switch (context->eyeIndex) {
+		case 0:
+			context->crop.left = obs_data_get_double(settings, "cropright");
+			context->crop.right = obs_data_get_double(settings, "cropleft");
+
+		break;
+		case 1:
+			context->crop.left = obs_data_get_double(settings, "cropleft");
+			context->crop.right = obs_data_get_double(settings, "cropright");
+		break;
+		default:
+			context->crop.left = 0;
+			context->crop.right = 0;
+		break;
 	}
+
 	context->crop.top = obs_data_get_double(settings, "croptop");
 	context->crop.bottom = obs_data_get_double(settings, "cropbottom");
 
@@ -421,6 +431,7 @@ static void win_openxrmirror_update(void *data, obs_data_t *settings)
 static void win_openxrmirror_defaults(obs_data_t *settings)
 {
 	obs_data_set_default_bool(settings, "righteye", true);
+    obs_data_set_default_int(settings, "eyeindex", -1);
 	obs_data_set_default_double(settings, "cropleft", 0);
 	obs_data_set_default_double(settings, "cropright", 0);
 	obs_data_set_default_double(settings, "croptop", 0);
