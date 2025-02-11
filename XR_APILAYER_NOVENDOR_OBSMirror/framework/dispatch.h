@@ -31,7 +31,6 @@ namespace LAYER_NAMESPACE {
     XrResult xrGetInstanceProcAddr(XrInstance instance,
                                    const char* name,
                                    PFN_xrVoidFunction* function);
-    XrResult xrDestroyInstance(XrInstance instance);
     XrResult xrCreateApiLayerInstance(const XrInstanceCreateInfo* instanceCreateInfo,
                                       const struct XrApiLayerCreateInfo* apiLayerInfo,
                                       XrInstance* instance);

@@ -761,10 +761,7 @@ namespace layer_OBSMirror {
         return g_instance.get();
     }
 
-    void ResetInstance() {
-        g_instance.reset();
-    }
-
+    const std::vector<std::pair<std::string, uint32_t>> advertisedExtensions;
 } // namespace layer_OBSMirror
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
