@@ -28,10 +28,10 @@
 
 namespace LAYER_NAMESPACE {
 
-    XrResult xrGetInstanceProcAddr(XrInstance instance,
+    XrResult XRAPI_CALL xrGetInstanceProcAddr(XrInstance instance,
                                    const char* name,
                                    PFN_xrVoidFunction* function);
-    XrResult xrCreateApiLayerInstance(const XrInstanceCreateInfo* instanceCreateInfo,
+    XrResult XRAPI_CALL xrCreateApiLayerInstance(const XrInstanceCreateInfo* instanceCreateInfo,
                                       const struct XrApiLayerCreateInfo* apiLayerInfo,
                                       XrInstance* instance);
 

@@ -68,6 +68,7 @@
       <Filter>Framework</Filter>
     </None>
     <None Include="packages.config" />
+    <None Include="XR_APILAYER_NOVENDOR_OBSMirror_32.json" />
   </ItemGroup>
   <ItemGroup>
     <Natvis Include="$(MSBuildThisFileDirectory)..\..\natvis\wil.natvis" />
