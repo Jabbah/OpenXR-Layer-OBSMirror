@@ -1,5 +1,6 @@
 $RegistryPath = "HKLM:\Software\Khronos\OpenXR\1\ApiLayers\Implicit"
-$JsonPath = Join-Path "$PSScriptRoot" "XR_APILAYER_NOVENDOR_OBSMirror.json"
+$currentDir = if (!$PSScriptRoot) {"$pwd"} else {"$PSScriptRoot"};
+$JsonPath = Join-Path "$currentDir" "XR_APILAYER_NOVENDOR_OBSMirror.json"
 
 $OldKeyPath = 'HKLM:\Software\Khronos\OpenXR\1\ApiLayers\Implicit\[*]XR_APILAYER_NOVENDOR_OBSMirror.json'
 
