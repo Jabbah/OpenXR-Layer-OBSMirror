@@ -36,7 +36,7 @@ using namespace LAYER_NAMESPACE::log;
 namespace LAYER_NAMESPACE {
 
     // Entry point for creating the layer.
-    XrResult xrCreateApiLayerInstance(const XrInstanceCreateInfo* const instanceCreateInfo,
+    XrResult XRAPI_CALL xrCreateApiLayerInstance(const XrInstanceCreateInfo* const instanceCreateInfo,
                                       const struct XrApiLayerCreateInfo* const apiLayerInfo,
                                       XrInstance* const instance) {
         TraceLoggingWrite(g_traceProvider, "xrCreateApiLayerInstance");
@@ -180,32 +180,8 @@ namespace LAYER_NAMESPACE {
         return result;
     }
 
-    // Handle cleanup of the layer's singleton.
-    XrResult xrDestroyInstance(XrInstance instance) {
-        TraceLoggingWrite(g_traceProvider, "xrDestroyInstance");
-
-        XrResult result;
-        try {
-            result = LAYER_NAMESPACE::GetInstance()->xrDestroyInstance(instance);
-            if (XR_SUCCEEDED(result)) {
-                LAYER_NAMESPACE::ResetInstance();
-            }
-        } catch (std::runtime_error exc) {
-            TraceLoggingWrite(g_traceProvider, "xrDestroyInstance_Error", TLArg(exc.what(), "Error"));
-            ErrorLog("xrDestroyInstance: %s\n", exc.what());
-            result = XR_ERROR_RUNTIME_FAILURE;
-        }
-
-        TraceLoggingWrite(g_traceProvider, "xrDestroyInstance_Result", TLArg(xr::ToCString(result), "Result"));
-        if (XR_FAILED(result)) {
-            ErrorLog("xrDestroyInstance failed with %s\n", xr::ToCString(result));
-        }
-
-        return result;
-    }
-
     // Forward the xrGetInstanceProcAddr() call to the dispatcher.
-    XrResult xrGetInstanceProcAddr(XrInstance instance, const char* name, PFN_xrVoidFunction* function) {
+    XrResult XRAPI_CALL xrGetInstanceProcAddr(XrInstance instance, const char* name, PFN_xrVoidFunction* function) {
         TraceLoggingWrite(g_traceProvider, "xrGetInstanceProcAddr");
 
         XrResult result;

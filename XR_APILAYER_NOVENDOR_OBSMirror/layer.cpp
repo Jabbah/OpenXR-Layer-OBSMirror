@@ -140,8 +140,8 @@ namespace {
 
             TraceLoggingWrite(g_traceProvider,
                               "xrCreateSession",
-                              TLPArg(instance, "Instance"),
-                              TLArg((int)createInfo->systemId, "SystemId"),
+                              TLXArg(instance, "Instance"),
+                              TLArg(createInfo->systemId, "SystemId"),
                               TLArg(createInfo->createFlags, "CreateFlags"));
 
             Session newSession;
@@ -211,7 +211,7 @@ namespace {
             }
 
             if (XR_SUCCEEDED(result)) {
-                TraceLoggingWrite(g_traceProvider, "xrCreateSession", TLPArg(*session, "Session"));
+                TraceLoggingWrite(g_traceProvider, "xrCreateSession", TLXArg(*session, "Session"));
             }
 
             return result;
@@ -227,7 +227,7 @@ namespace {
 
             TraceLoggingWrite(g_traceProvider,
                               "xrCreateSwapchain",
-                              TLPArg(session, "Session"),
+                              TLXArg(session, "Session"),
                               TLArg(createInfo->arraySize, "ArraySize"),
                               TLArg(createInfo->width, "Width"),
                               TLArg(createInfo->height, "Height"),
@@ -276,13 +276,13 @@ namespace {
                 }
             }
 
-            TraceLoggingWrite(g_traceProvider, "xrCreateSwapchain", TLPArg(*swapchain, "Swapchain"));
+            TraceLoggingWrite(g_traceProvider, "xrCreateSwapchain", TLXArg(*swapchain, "Swapchain"));
 
             return result;
         }
 
         XrResult xrDestroySwapchain(XrSwapchain swapchain) override {
-            TraceLoggingWrite(g_traceProvider, "xrDestroySwapchain", TLPArg(swapchain, "Swapchain"));
+            TraceLoggingWrite(g_traceProvider, "xrDestroySwapchain", TLXArg(swapchain, "Swapchain"));
 
             Log("xrDestroySwapchain %d\n", swapchain);
             const XrResult result = OpenXrApi::xrDestroySwapchain(swapchain);
@@ -301,7 +301,7 @@ namespace {
                                             XrSwapchainImageBaseHeader* images) override {
             TraceLoggingWrite(g_traceProvider,
                               "xrEnumerateSwapchainImages",
-                              TLPArg(swapchain, "Swapchain"),
+                              TLXArg(swapchain, "Swapchain"),
                               TLArg(imageCapacityInput, "ImageCapacityInput"));
             Log("xrEnumerateSwapchainImages swapChain %p imageCapacityInput %d\n", swapchain, imageCapacityInput);
             if (!isSwapchainHandled(swapchain) || imageCapacityInput == 0) {
@@ -664,7 +664,7 @@ namespace {
                                         _mirror->Blend(projView,
                                                        quadLayer,
                                                        (DXGI_FORMAT)swapchainState._createInfo.format,
-                                                       projLayer ? projLayer->space : nullptr,
+                                                       projLayer ? projLayer->space : NULL,
                                                        frameEndInfo->displayTime);
                                     }
                                 }
@@ -761,10 +761,7 @@ namespace layer_OBSMirror {
         return g_instance.get();
     }
 
-    void ResetInstance() {
-        g_instance.reset();
-    }
-
+    const std::vector<std::pair<std::string, uint32_t>> advertisedExtensions;
 } // namespace layer_OBSMirror
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {

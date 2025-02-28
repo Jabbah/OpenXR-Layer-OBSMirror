@@ -35,4 +35,6 @@ namespace layer_OBSMirror {
     // A function to reset (delete) the singleton.
     void ResetInstance();
 
+    extern const std::vector<std::pair<std::string, uint32_t>> advertisedExtensions;
+
 } // namespace layer_OBSMirror

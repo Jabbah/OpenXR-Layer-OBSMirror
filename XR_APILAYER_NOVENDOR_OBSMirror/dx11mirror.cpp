@@ -170,7 +170,7 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
         uint32_t lastProcessedIndex = 0;
         uint32_t frameNumber = 0;
         uint32_t eyeIndex = 0;
-        HANDLE sharedHandle[3] = {NULL};
+        uint64_t sharedHandle[3] = {NULL};
 
         void reset() {
             for (int i = 0; i < 3; ++i)
@@ -593,7 +593,7 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
 
                 HANDLE sharedHandle;
                 pOtherResource->GetSharedHandle(&sharedHandle);
-                _pMirrorSurfaceData->sharedHandle[i++] = sharedHandle;
+                _pMirrorSurfaceData->sharedHandle[i++] = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(sharedHandle));
                 Log("Shared handle: 0x%p\n", sharedHandle);
             }
 
