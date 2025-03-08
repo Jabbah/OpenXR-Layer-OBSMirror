@@ -37,7 +37,14 @@ namespace Mirror
         const XrReferenceSpaceCreateInfo* getSpaceInfo(const XrSpace space) const;
 
         void Blend(const XrCompositionLayerProjectionView* view,
+                   const XrFovf& hmdFov,
                    const XrCompositionLayerQuad* quad,
+                   const DXGI_FORMAT format,
+                   const XrSpace space,
+                   const XrTime displayTime);
+
+        void Blend(const XrCompositionLayerProjectionView* view,
+                   const XrFovf& hmdFov,
                    const DXGI_FORMAT format,
                    const XrSpace space,
                    const XrTime displayTime);

@@ -585,7 +585,13 @@ namespace {
                     }
                 }
             }
-
+#ifdef _DEBUG
+            if (_projectionViews.size() > 0) {
+                Log("ProjectionView fov: Down - %f   Up - %f\n",
+                    _projectionViews[0].fov.angleDown,
+                    _projectionViews[0].fov.angleUp);
+            }
+#endif
             return res;
         }
 
@@ -638,14 +644,16 @@ namespace {
                         const XrCompositionLayerBaseHeader* hdr = frameEndInfo->layers[i];
                         if (hdr->type == XR_TYPE_COMPOSITION_LAYER_PROJECTION) {
                             projLayer = reinterpret_cast<const XrCompositionLayerProjection*>(hdr);
-                            if (projLayer->viewCount == 2) {
+                            if (projLayer->viewCount >= 2) {
                                 projView = &projLayer->views[_mirror->getEyeIndex()];
                                 if (isSwapchainHandled(projView->subImage.swapchain)) {
                                     auto& swapchainState = _swapchains[projView->subImage.swapchain];
                                     if (swapchainState._dx11LastTexture || swapchainState._dx12LastTexture) {
-                                        _mirror->copyPerspectiveTex(projView->subImage.imageRect,
-                                                                    (DXGI_FORMAT)swapchainState._createInfo.format,
-                                                                    projView->subImage.swapchain);
+                                        _mirror->Blend(projView,
+                                                       _projectionViews[0].fov,
+                                                       (DXGI_FORMAT)swapchainState._createInfo.format,
+                                                       projLayer ? projLayer->space : NULL,
+                                                       frameEndInfo->displayTime);
                                     }
                                 }
                             }
@@ -662,6 +670,7 @@ namespace {
                                 if (swapchainState._dx11LastTexture || swapchainState._dx12LastTexture) {
                                     if (projView) {
                                         _mirror->Blend(projView,
+                                                       _projectionViews[0].fov,
                                                        quadLayer,
                                                        (DXGI_FORMAT)swapchainState._createInfo.format,
                                                        projLayer ? projLayer->space : NULL,
