@@ -356,7 +356,7 @@ namespace {
                             desc.Width = swapchainState._createInfo.width;
                             desc.Height = swapchainState._createInfo.height;
                             desc.MipLevels = 1;
-                            desc.ArraySize = 1;
+                            desc.ArraySize = swapchainState._createInfo.arraySize;
                             desc.Format = (DXGI_FORMAT)swapchainState._createInfo.format;
                             desc.SampleDesc.Count = 1;
                             desc.SampleDesc.Quality = 0;
@@ -418,7 +418,7 @@ namespace {
                             d3d12TextureDesc.Alignment = 0;
                             d3d12TextureDesc.Width = swapchainState._createInfo.width;
                             d3d12TextureDesc.Height = swapchainState._createInfo.height;
-                            d3d12TextureDesc.DepthOrArraySize = 1;
+                            d3d12TextureDesc.DepthOrArraySize = swapchainState._createInfo.arraySize;
                             d3d12TextureDesc.MipLevels = 1;
                             d3d12TextureDesc.Format = (DXGI_FORMAT)swapchainState._createInfo.format;
                             d3d12TextureDesc.SampleDesc.Count = 1;
@@ -529,7 +529,7 @@ namespace {
                     }
                 }
             }
-            XrResult result;
+            XrResult result{XR_SUCCESS};
             if (doXRcall)
                 result = OpenXrApi::xrReleaseSwapchainImage(swapchain, releaseInfo);
 
@@ -645,15 +645,35 @@ namespace {
                         if (hdr->type == XR_TYPE_COMPOSITION_LAYER_PROJECTION) {
                             projLayer = reinterpret_cast<const XrCompositionLayerProjection*>(hdr);
                             if (projLayer->viewCount >= 2) {
-                                projView = &projLayer->views[_mirror->getEyeIndex()];
-                                if (isSwapchainHandled(projView->subImage.swapchain)) {
-                                    auto& swapchainState = _swapchains[projView->subImage.swapchain];
-                                    if (swapchainState._dx11LastTexture || swapchainState._dx12LastTexture) {
-                                        _mirror->Blend(projView,
-                                                       _projectionViews[0].fov,
-                                                       (DXGI_FORMAT)swapchainState._createInfo.format,
-                                                       projLayer ? projLayer->space : NULL,
-                                                       frameEndInfo->displayTime);
+                                if (_mirror->getEyeIndex() < 2) {
+                                    projView = &projLayer->views[_mirror->getEyeIndex()];
+                                    if (isSwapchainHandled(projView->subImage.swapchain)) {
+                                        auto& swapchainState = _swapchains[projView->subImage.swapchain];
+                                        if (swapchainState._dx11LastTexture || swapchainState._dx12LastTexture) {
+                                            _mirror->Blend(projView,
+                                                           _projectionViews[0].fov,
+                                                           (DXGI_FORMAT)swapchainState._createInfo.format,
+                                                           projLayer ? projLayer->space : NULL,
+                                                           frameEndInfo->displayTime);
+                                        }
+                                    }
+                                } else {
+                                    projView = &projLayer->views[0];
+                                    const XrCompositionLayerProjectionView* projView2 = &projLayer->views[1];
+                                    if (isSwapchainHandled(projView->subImage.swapchain) &&
+                                        isSwapchainHandled(projView2->subImage.swapchain)) {
+                                        auto& swapchainState = _swapchains[projView->subImage.swapchain];
+                                        auto& swapchainState2 = _swapchains[projView2->subImage.swapchain];
+                                        if ((swapchainState._dx11LastTexture || swapchainState._dx12LastTexture) &&
+                                            (swapchainState2._dx11LastTexture || swapchainState2._dx12LastTexture)) {
+                                            _mirror->Blend(projView,
+                                                           _projectionViews[0].fov,
+                                                           projView2,
+                                                           _projectionViews[1].fov,
+                                                           (DXGI_FORMAT)swapchainState._createInfo.format,
+                                                           projLayer ? projLayer->space : NULL,
+                                                           frameEndInfo->displayTime);
+                                        }
                                     }
                                 }
                             }
@@ -702,7 +722,7 @@ namespace {
                     CloseHandle(_sharedHandle);
             }
             XrSwapchain _xrSwapchain{XR_NULL_HANDLE};
-            XrSwapchainCreateInfo _createInfo;
+            XrSwapchainCreateInfo _createInfo{};
             std::vector<XrSwapchainImageD3D11KHR> _dx11SurfaceImages;
             std::vector<XrSwapchainImageD3D12KHR> _dx12SurfaceImages;
             uint32_t _aquiredIndex = -1;
@@ -737,7 +757,7 @@ namespace {
 
         std::unique_ptr<D3D11Mirror> _mirror;
 
-        UINT64 _currentFenceValue;
+        UINT64 _currentFenceValue{0};
 
         XrStructureType _xrGraphicsAPI = XR_TYPE_UNKNOWN;
 

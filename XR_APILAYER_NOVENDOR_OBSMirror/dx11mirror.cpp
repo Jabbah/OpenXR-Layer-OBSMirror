@@ -10,6 +10,7 @@
 #include <d3d11_3.h>
 #include <d3d11_4.h>
 #include <xr_linear.h>
+#include <algorithm>
 
 #pragma comment(lib, "d3dcompiler.lib")
 #pragma comment(lib, "d3d11.lib")
@@ -103,16 +104,24 @@ namespace Mirror {
         XMFLOAT4X4 viewproj;
     };
 
+    struct quad_blend_buffer_t {
+        float blendStartX;   // Corresponds to HLSL variable
+        float blendEndX;     // Corresponds to HLSL variable
+        XMFLOAT2 padding_ps; // Ensure 16-byte alignment (float+float = 8 bytes, need 8 more)
+    };
 
-    constexpr char quad_shader_code[] = R"_(
+    struct quad_array_blend_buffer_t {
+        float blendStartX;   // Corresponds to HLSL variable
+        float blendEndX;     // Corresponds to HLSL variable
+        float texIndex;
+        float padding_ps; // Ensure 16-byte alignment (float+float = 8 bytes, need 8 more)
+    };
+
+    constexpr char quad_vs_code[] = R"_(
 cbuffer TransformBuffer : register(b0) {
 	float4x4 world;
 	float4x4 viewproj;
 };
-
-Texture2D shaderTexture : register(t0);
-
-SamplerState SampleType : register(s0);
 
 struct vsIn {
 	float4 pos  : POSITION;
@@ -132,11 +141,84 @@ psIn vs_quad(vsIn input)
 	return output;
 }
 
+)_";
+
+    constexpr char quad_ps_code[] = R"_(
+
+cbuffer PSConstants : register(b1) // Use a different register for PS constants
+{
+    // Blend starts at blendStartX (0=left) and ends at blendEndX (1=right)
+    // in normalized texture coordinates (UV space) of the quad.
+    float blendStartX;
+    float blendEndX;
+    float2 padding_ps; // Ensure 16-byte alignment
+};
+
+Texture2D shaderTexture : register(t0);
+SamplerState SampleType : register(s0);
+
+
+struct psIn {
+	float4 pos : SV_POSITION;
+	float2 tex : TEXCOORD0;
+};
+
 float4 ps_quad(psIn inputPS) : SV_TARGET
 {
 	float4 textureColor = shaderTexture.Sample(SampleType, inputPS.tex);
+
+    // Calculate the horizontal blend factor based on texture coordinate x
+    // smoothstep provides a nice S-curve interpolation between the start and end points.
+    // input.Tex.x ranges from 0.0 (left edge of quad) to 1.0 (right edge of quad)
+    float horizontalBlend = smoothstep(blendStartX, blendEndX, inputPS.tex.x);
+
+    // Modulate the texture's alpha component by the calculated horizontal blend factor.
+    // The blend state will then use this resulting alpha.
+    textureColor.a *= horizontalBlend;
+
 	return textureColor;
-})_";
+}
+)_";
+
+    constexpr char quad_array_ps_code[] = R"_(
+
+cbuffer PSConstants : register(b1) // Use a different register for PS constants
+{
+    // Blend starts at blendStartX (0=left) and ends at blendEndX (1=right)
+    // in normalized texture coordinates (UV space) of the quad.
+    float blendStartX;
+    float blendEndX;
+    float texIndex;
+    float padding_ps; // Ensure 16-byte alignment
+};
+
+Texture2DArray shaderTexture : register(t0);
+SamplerState SampleType : register(s0);
+
+struct psIn {
+	float4 pos : SV_POSITION;
+	float2 tex : TEXCOORD0;
+};
+
+float4 ps_quad(psIn inputPS) : SV_TARGET
+{
+    // Combine UV coords with the desired array slice index
+    float3 sampleCoord = float3(inputPS.tex.x, inputPS.tex.y, texIndex);
+
+	float4 textureColor = shaderTexture.Sample(SampleType, sampleCoord);
+
+    // Calculate the horizontal blend factor based on texture coordinate x
+    // smoothstep provides a nice S-curve interpolation between the start and end points.
+    // input.Tex.x ranges from 0.0 (left edge of quad) to 1.0 (right edge of quad)
+    float horizontalBlend = smoothstep(blendStartX, blendEndX, inputPS.tex.x);
+
+    // Modulate the texture's alpha component by the calculated horizontal blend factor.
+    // The blend state will then use this resulting alpha.
+    textureColor.a *= horizontalBlend;
+
+	return textureColor;
+}
+)_";
 
     float quad_verts[] = {
         // coord x,y,z,w  tex x,y,
@@ -175,6 +257,9 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
         uint32_t lastProcessedIndex = 0;
         uint32_t frameNumber = 0;
         uint32_t eyeIndex = 0;
+        float overlap = 50;
+        float blend = 10;
+        float blendPos = 10;
         uint64_t sharedHandle[3] = {NULL};
 
         void reset() {
@@ -207,16 +292,21 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
 
         Log("init: D3D11CreateDevice created\n");
 
-        ID3DBlob* vShaderBlob = d3d_compile_shader(quad_shader_code, "vs_quad", "vs_5_0");
-        ID3DBlob* pShaderBlob = d3d_compile_shader(quad_shader_code, "ps_quad", "ps_5_0");
+        ID3DBlob* vShaderBlob = d3d_compile_shader(quad_vs_code, "vs_quad", "vs_5_0");
+        ID3DBlob* pShaderBlob = d3d_compile_shader(quad_ps_code, "ps_quad", "ps_5_0");
+        ID3DBlob* psArrayBlob = d3d_compile_shader(quad_array_ps_code, "ps_quad", "ps_5_0");
         CHECK_DX(_d3d11MirrorDevice->CreateVertexShader(vShaderBlob->GetBufferPointer(),
                                                         vShaderBlob->GetBufferSize(),
                                                         nullptr,
                                                         _quadVShader.ReleaseAndGetAddressOf()));
         CHECK_DX(_d3d11MirrorDevice->CreatePixelShader(pShaderBlob->GetBufferPointer(),
-                                                        pShaderBlob->GetBufferSize(),
-                                                        nullptr,
-                                                        _quadPShader.ReleaseAndGetAddressOf()));
+                                                       pShaderBlob->GetBufferSize(),
+                                                       nullptr,
+                                                       _quadPShader.ReleaseAndGetAddressOf()));
+        CHECK_DX(_d3d11MirrorDevice->CreatePixelShader(psArrayBlob->GetBufferPointer(),
+                                                       psArrayBlob->GetBufferSize(),
+                                                       nullptr,
+                                                       _quadArrayPShader.ReleaseAndGetAddressOf()));
 
         D3D11_INPUT_ELEMENT_DESC q_vert_desc[] = {
             {"POSITION",
@@ -253,6 +343,11 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
         CHECK_DX(_d3d11MirrorDevice->CreateBuffer(
             &qConstBufferDesc, nullptr, _quadConstantBuffer.ReleaseAndGetAddressOf()));
 
+        CD3D11_BUFFER_DESC qConstBlendBufferDesc(
+            sizeof(quad_blend_buffer_t), D3D11_BIND_CONSTANT_BUFFER, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE);
+        CHECK_DX(_d3d11MirrorDevice->CreateBuffer(
+            &qConstBlendBufferDesc, nullptr, _quadConstantBlendBuffer.ReleaseAndGetAddressOf()));
+
         // Create a texture sampler state description.
         D3D11_SAMPLER_DESC samplerDesc;
         samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
@@ -288,8 +383,6 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
 
         _d3d11MirrorContext->VSSetConstantBuffers(0, 1, _quadConstantBuffer.GetAddressOf());
         _d3d11MirrorContext->VSSetShader(_quadVShader.Get(), nullptr, 0);
-        _d3d11MirrorContext->PSSetShader(_quadPShader.Get(), nullptr, 0);
-        _d3d11MirrorContext->PSSetSamplers(0, 1, _quadSampleState.GetAddressOf());
 
         UINT strides[4] = {sizeof(float) * 6, sizeof(float) * 6, sizeof(float) * 6, sizeof(float) * 6};
         UINT offsets[4] = {0, 0, 0, 0};
@@ -363,6 +456,7 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
         D3D11_TEXTURE2D_DESC srcDesc;
         srcData._texture->GetDesc(&srcDesc);
 
+        Log("Creating shared mirror texture: W: %d H: %d Array: %d\n", srcDesc.Width, srcDesc.Height, srcDesc.ArraySize);
         // Figure out what format we need to use
         DxgiFormatInfo info = {};
         if (!GetFormatInfo(srcDesc.Format, info)) {
@@ -373,9 +467,17 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
         DXGI_FORMAT type = useLinearFormat ? info.linear : info.srgb;
         D3D11_SHADER_RESOURCE_VIEW_DESC viewDesc;
         viewDesc.Format = type;
-        viewDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-        viewDesc.Texture2D.MipLevels = 1;
-        viewDesc.Texture2D.MostDetailedMip = 0;
+        if (srcDesc.ArraySize == 1) {
+            viewDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+            viewDesc.Texture2D.MipLevels = 1;
+            viewDesc.Texture2D.MostDetailedMip = 0;
+        } else {
+            viewDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
+            viewDesc.Texture2DArray.ArraySize = srcDesc.ArraySize;
+            viewDesc.Texture2DArray.FirstArraySlice = 0;
+            viewDesc.Texture2DArray.MipLevels = 1;
+            viewDesc.Texture2DArray.MostDetailedMip = 0;
+        }
 
         CHECK_DX(_d3d11MirrorDevice->CreateShaderResourceView(
             srcData._texture.Get(), &viewDesc, srcData._quadTextureView.GetAddressOf()));
@@ -447,6 +549,10 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
         viewDesc.Texture2D.MipLevels = 1;
         viewDesc.Texture2D.MostDetailedMip = 0;
 
+        _d3d11MirrorContext->PSSetConstantBuffers(1, 1, _quadConstantBlendBuffer.GetAddressOf());
+        _d3d11MirrorContext->PSSetShader(_quadPShader.Get(), nullptr, 0);
+        _d3d11MirrorContext->PSSetSamplers(0, 1, _quadSampleState.GetAddressOf());
+
         CHECK_DX(
             _d3d11MirrorContext->Map(_quadVertexBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &_mappedQuadVertexBuffer));
 
@@ -472,6 +578,16 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
                                 (float)srcDesc.Height;
 
         _d3d11MirrorContext->Unmap(_quadVertexBuffer.Get(), 0);
+
+        quad_blend_buffer_t psCB1;
+        psCB1.blendStartX = 0.0f;
+        psCB1.blendEndX = 0.0f;
+        CHECK_DX(_d3d11MirrorContext->Map(
+            _quadConstantBlendBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &_mappedQuadBlendBuffer));
+
+        memcpy(_mappedQuadBlendBuffer.pData, &psCB1, sizeof(psCB1));
+        _d3d11MirrorContext->Unmap(_quadConstantBlendBuffer.Get(), 0);
+
 
         auto quadTextureView = it->second._quadTextureView;
 
@@ -576,6 +692,10 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
             viewDesc.Texture2D.MipLevels = 1;
             viewDesc.Texture2D.MostDetailedMip = 0;
 
+            _d3d11MirrorContext->PSSetConstantBuffers(1, 1, _quadConstantBlendBuffer.GetAddressOf());
+            _d3d11MirrorContext->PSSetShader(_quadPShader.Get(), nullptr, 0);
+            _d3d11MirrorContext->PSSetSamplers(0, 1, _quadSampleState.GetAddressOf());
+
             CHECK_DX(_d3d11MirrorContext->Map(
                 _quadVertexBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &_mappedQuadVertexBuffer));
 
@@ -602,6 +722,15 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
 
             _d3d11MirrorContext->Unmap(_quadVertexBuffer.Get(), 0);
 
+            quad_blend_buffer_t psCB1;
+            psCB1.blendStartX = 0.0f;
+            psCB1.blendEndX = 0.5f;
+            CHECK_DX(_d3d11MirrorContext->Map(
+                _quadConstantBlendBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &_mappedQuadBlendBuffer));
+
+            memcpy(_mappedQuadBlendBuffer.pData, &psCB1, sizeof(psCB1));
+            _d3d11MirrorContext->Unmap(_quadConstantBlendBuffer.Get(), 0);
+
             auto quadTextureView = it->second._quadTextureView;
 
             _d3d11MirrorContext->PSSetShaderResources(0, 1, quadTextureView.GetAddressOf());
@@ -623,15 +752,11 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
             // Set up for rendering
             _d3d11MirrorContext->OMSetRenderTargets(1, _targetView.GetAddressOf(), nullptr);
 
-            // Modified FOV handling
-            float fovVertRatio =
-                ((hmdFov.angleDown / view->fov.angleDown) + (hmdFov.angleUp / view->fov.angleUp)) / 2.0f;
-            float fovHorizRatio =
-                ((hmdFov.angleLeft / view->fov.angleLeft) + (hmdFov.angleRight / view->fov.angleRight)) / 2.0f;
+            checkFOVs(hmdFov, view->fov);
 
             // Set up camera matrices based on OpenXR's predicted viewpoint information
             XMMATRIX mat_projection = d3dXrOrthoProjection(
-                (float)rect.extent.width * fovHorizRatio, (float)rect.extent.height * fovVertRatio, -1.0f, 1.0f);
+                (float)rect.extent.width * _fovHorizRatio, (float)rect.extent.height * _fovVertRatio, -1.0f, 1.0f);
 
             XMMATRIX mat_view =
                 XMMatrixInverse(nullptr,
@@ -657,6 +782,258 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
         }
     }
 
+    void D3D11Mirror::Blend(const XrCompositionLayerProjectionView* view1,
+                            const XrFovf& hmdFov1,
+                            const XrCompositionLayerProjectionView* view2,
+                            const XrFovf& hmdFov2,
+                            const DXGI_FORMAT format,
+                            const XrSpace viewSpace,
+                            const XrTime displayTime) {
+        auto it1 = _sourceData.find(view1->subImage.swapchain);
+        if (it1 == _sourceData.end())
+            return;
+
+        auto it2 = _sourceData.find(view2->subImage.swapchain);
+        if (it2 == _sourceData.end())
+            return;
+
+        auto srcTex1 = it1->second._texture;
+
+        if (!srcTex1)
+            return;
+
+        auto srcTex2 = it2->second._texture;
+
+        if (!srcTex2)
+            return;
+
+        checkCopyTex(view1->subImage.imageRect.extent.width,
+                     view1->subImage.imageRect.extent.height,
+                     format);
+
+        if (_compositorTexture == nullptr || _mirrorTextures.size() == 0)
+            return;
+
+        {
+            D3D11_TEXTURE2D_DESC srcDesc;
+            srcTex1->GetDesc(&srcDesc);
+
+            _d3d11MirrorContext->PSSetConstantBuffers(1, 1, _quadConstantBlendBuffer.GetAddressOf());
+            _d3d11MirrorContext->PSSetShader(_quadArrayPShader.Get(), nullptr, 0);
+            _d3d11MirrorContext->PSSetSamplers(0, 1, _quadSampleState.GetAddressOf());
+
+
+            CHECK_DX(
+                _d3d11MirrorContext->Map(_quadVertexBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &_mappedQuadVertexBuffer));
+
+            float* pBuffer = (float*)_mappedQuadVertexBuffer.pData;
+            memcpy(pBuffer, quad_verts, sizeof(quad_verts));
+
+            const uint32_t row = 6;
+            // Top left
+            pBuffer[0 * row + 4] = (float)view1->subImage.imageRect.offset.x / (float)srcDesc.Width;
+            pBuffer[0 * row + 5] = (float)view1->subImage.imageRect.offset.y / (float)srcDesc.Height;
+            // Bottom left
+            pBuffer[1 * row + 4] = (float)view1->subImage.imageRect.offset.x / (float)srcDesc.Width;
+            pBuffer[1 * row + 5] = (float)(view1->subImage.imageRect.offset.y + view1->subImage.imageRect.extent.height) /
+                                   (float)srcDesc.Height;
+            // Top right
+            pBuffer[2 * row + 4] =
+                (float)(view1->subImage.imageRect.offset.x + view1->subImage.imageRect.extent.width) / (float)srcDesc.Width;
+            pBuffer[2 * row + 5] = (float)(view1->subImage.imageRect.offset.y) / (float)srcDesc.Height;
+            // Bottom right
+            pBuffer[3 * row + 4] =
+                (float)(view1->subImage.imageRect.offset.x + view1->subImage.imageRect.extent.width) / (float)srcDesc.Width;
+            pBuffer[3 * row + 5] = (float)(view1->subImage.imageRect.offset.y + view1->subImage.imageRect.extent.height) /
+                                   (float)srcDesc.Height;
+
+            _d3d11MirrorContext->Unmap(_quadVertexBuffer.Get(), 0);
+
+            quad_array_blend_buffer_t psCB1;
+            psCB1.blendStartX = 0.f;
+            psCB1.blendEndX = 0.f;
+            psCB1.texIndex = 0.0f;
+            CHECK_DX(_d3d11MirrorContext->Map(
+                _quadConstantBlendBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &_mappedQuadBlendBuffer));
+
+            memcpy(_mappedQuadBlendBuffer.pData, &psCB1, sizeof(psCB1));
+            _d3d11MirrorContext->Unmap(_quadConstantBlendBuffer.Get(), 0);
+
+            auto quadTextureView = it1->second._quadTextureView;
+
+            _d3d11MirrorContext->PSSetShaderResources(0, 1, quadTextureView.GetAddressOf());
+
+            float blend_factor[4] = {1.f, 1.f, 1.f, 1.f};
+            _d3d11MirrorContext->OMSetBlendState(_quadBlendState.Get(), blend_factor, 0xffffffff);
+
+            const XrRect2Di& rect = view1->subImage.imageRect;
+            D3D11_VIEWPORT viewport = CD3D11_VIEWPORT(
+                (float)rect.offset.x, (float)rect.offset.y, (float)rect.extent.width, (float)rect.extent.height);
+            _d3d11MirrorContext->RSSetViewports(1, &viewport);
+            D3D11_RECT rects[1];
+            rects[0].top = rect.offset.y;
+            rects[0].left = rect.offset.x;
+            rects[0].bottom = rect.offset.y + rect.extent.height;
+            rects[0].right = rect.offset.x + rect.extent.width;
+            _d3d11MirrorContext->RSSetScissorRects(1, rects);
+
+            // Set up for rendering
+            _d3d11MirrorContext->OMSetRenderTargets(1, _targetView.GetAddressOf(), nullptr);
+
+            checkFOVs(hmdFov1, view1->fov);
+
+            // Set up camera matrices based on OpenXR's predicted viewpoint information
+            XMMATRIX mat_projection = d3dXrOrthoProjection(
+                (float)rect.extent.width * _fovHorizRatio, (float)rect.extent.height * _fovVertRatio, -1.0f, 1.0f);
+
+            XMMATRIX mat_view =
+                XMMatrixInverse(nullptr,
+                                XMMatrixAffineTransformation(DirectX::g_XMOne,
+                                                             DirectX::g_XMZero,
+                                                             XMLoadFloat4((XMFLOAT4*)&view1->pose.orientation),
+                                                             XMLoadFloat3((XMFLOAT3*)&view1->pose.position)));
+
+            // Put camera matrices into the shader's constant buffer
+            quad_transform_buffer_t transform_buffer;
+            XMStoreFloat4x4(&transform_buffer.viewproj, XMMatrixTranspose(mat_view * mat_projection));
+
+            XMFLOAT4 scalingVector = {(float)rect.extent.width, (float)rect.extent.height, 1.f, 1.f};
+            XMMATRIX mat_model = XMMatrixAffineTransformation(XMLoadFloat4(&scalingVector),
+                                                              DirectX::g_XMZero,
+                                                              XMLoadFloat4((XMFLOAT4*)&view1->pose.orientation),
+                                                              XMLoadFloat3((XMFLOAT3*)&view1->pose.position));
+
+            // Update the shader's constant buffer with the transform matrix info, and then draw the quad
+            XMStoreFloat4x4(&transform_buffer.world, XMMatrixTranspose(mat_model));
+            _d3d11MirrorContext->UpdateSubresource(_quadConstantBuffer.Get(), 0, nullptr, &transform_buffer, 0, 0);
+            _d3d11MirrorContext->DrawIndexed((UINT)_countof(quad_inds), 0, 0);
+        }
+
+
+
+        {
+            D3D11_TEXTURE2D_DESC srcDesc;
+            srcTex2->GetDesc(&srcDesc);
+
+            _d3d11MirrorContext->PSSetConstantBuffers(1, 1, _quadConstantBlendBuffer.GetAddressOf());
+            _d3d11MirrorContext->PSSetShader(_quadArrayPShader.Get(), nullptr, 0);
+            _d3d11MirrorContext->PSSetSamplers(0, 1, _quadSampleState.GetAddressOf());
+
+            CHECK_DX(_d3d11MirrorContext->Map(
+                _quadVertexBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &_mappedQuadVertexBuffer));
+
+            float* pBuffer = (float*)_mappedQuadVertexBuffer.pData;
+            memcpy(pBuffer, quad_verts, sizeof(quad_verts));
+
+            const uint32_t row = 6;
+            // Top left
+            pBuffer[0 * row + 4] = (float)view2->subImage.imageRect.offset.x / (float)srcDesc.Width;
+            pBuffer[0 * row + 5] = (float)view2->subImage.imageRect.offset.y / (float)srcDesc.Height;
+            // Bottom left
+            pBuffer[1 * row + 4] = (float)view2->subImage.imageRect.offset.x / (float)srcDesc.Width;
+            pBuffer[1 * row + 5] =
+                (float)(view2->subImage.imageRect.offset.y + view2->subImage.imageRect.extent.height) /
+                (float)srcDesc.Height;
+            // Top right
+            pBuffer[2 * row + 4] =
+                (float)(view2->subImage.imageRect.offset.x + view2->subImage.imageRect.extent.width) /
+                (float)srcDesc.Width;
+            pBuffer[2 * row + 5] = (float)(view2->subImage.imageRect.offset.y) / (float)srcDesc.Height;
+            // Bottom right
+            pBuffer[3 * row + 4] =
+                (float)(view2->subImage.imageRect.offset.x + view2->subImage.imageRect.extent.width) /
+                (float)srcDesc.Width;
+            pBuffer[3 * row + 5] =
+                (float)(view2->subImage.imageRect.offset.y + view2->subImage.imageRect.extent.height) /
+                (float)srcDesc.Height;
+
+            _d3d11MirrorContext->Unmap(_quadVertexBuffer.Get(), 0);
+
+            quad_array_blend_buffer_t psCB1;
+            psCB1.blendStartX = 
+                std::max(0.0f, (_pMirrorSurfaceData->blendPos - _pMirrorSurfaceData->blend / 2.0f) / 100.0f);
+            psCB1.blendEndX =
+                std::min(1.0f, (_pMirrorSurfaceData->blendPos + _pMirrorSurfaceData->blend / 2.0f) / 100.0f);
+            psCB1.texIndex = 1.0f;
+            CHECK_DX(_d3d11MirrorContext->Map(
+                _quadConstantBlendBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &_mappedQuadBlendBuffer));
+
+            memcpy(_mappedQuadBlendBuffer.pData, &psCB1, sizeof(psCB1));
+            _d3d11MirrorContext->Unmap(_quadConstantBlendBuffer.Get(), 0);
+
+            auto quadTextureView = it2->second._quadTextureView;
+
+            _d3d11MirrorContext->PSSetShaderResources(0, 1, quadTextureView.GetAddressOf());
+
+            XrRect2Di rect = view2->subImage.imageRect;
+            rect.offset.x = rect.offset.x + static_cast<int32_t>((rect.extent.width * _pMirrorSurfaceData->overlap) / 100);
+            D3D11_VIEWPORT viewport = CD3D11_VIEWPORT(
+                (float)rect.offset.x, (float)rect.offset.y, (float)rect.extent.width, (float)rect.extent.height);
+            _d3d11MirrorContext->RSSetViewports(1, &viewport);
+            D3D11_RECT rects[1];
+            rects[0].top = rect.offset.y;
+            rects[0].left = rect.offset.x;
+            rects[0].bottom = rect.offset.y + rect.extent.height;
+            rects[0].right = rect.offset.x + rect.extent.width;
+            _d3d11MirrorContext->RSSetScissorRects(1, rects);
+
+            // Set up for rendering
+            _d3d11MirrorContext->OMSetRenderTargets(1, _targetView.GetAddressOf(), nullptr);
+
+            // Set up camera matrices based on OpenXR's predicted viewpoint information
+            XMMATRIX mat_projection = d3dXrOrthoProjection(
+                (float)rect.extent.width * _fovHorizRatio, (float)rect.extent.height * _fovVertRatio, -1.0f, 1.0f);
+
+            XMMATRIX mat_view =
+                XMMatrixInverse(nullptr,
+                                XMMatrixAffineTransformation(DirectX::g_XMOne,
+                                                             DirectX::g_XMZero,
+                                                             XMLoadFloat4((XMFLOAT4*)&view2->pose.orientation),
+                                                             XMLoadFloat3((XMFLOAT3*)&view2->pose.position)));
+
+            // Put camera matrices into the shader's constant buffer
+            quad_transform_buffer_t transform_buffer;
+            XMStoreFloat4x4(&transform_buffer.viewproj, XMMatrixTranspose(mat_view * mat_projection));
+
+            XMFLOAT4 scalingVector = {(float)rect.extent.width, (float)rect.extent.height, 1.f, 1.f};
+            XMMATRIX mat_model = XMMatrixAffineTransformation(XMLoadFloat4(&scalingVector),
+                                                              DirectX::g_XMZero,
+                                                              XMLoadFloat4((XMFLOAT4*)&view2->pose.orientation),
+                                                              XMLoadFloat3((XMFLOAT3*)&view2->pose.position));
+
+            // Update the shader's constant buffer with the transform matrix info, and then draw the quad
+            XMStoreFloat4x4(&transform_buffer.world, XMMatrixTranspose(mat_model));
+            _d3d11MirrorContext->UpdateSubresource(_quadConstantBuffer.Get(), 0, nullptr, &transform_buffer, 0, 0);
+            _d3d11MirrorContext->DrawIndexed((UINT)_countof(quad_inds), 0, 0);
+        }
+    }
+
+    void D3D11Mirror::checkFOVs(const XrFovf& hmdFov, const XrFovf& viewFov)
+    {
+        if (hmdFov.angleDown != _hmdFov.angleDown || hmdFov.angleUp != _hmdFov.angleUp ||
+            hmdFov.angleLeft != _hmdFov.angleLeft || hmdFov.angleRight != _hmdFov.angleRight ||
+            viewFov.angleDown != _viewFov.angleDown || viewFov.angleUp != _viewFov.angleUp ||
+            viewFov.angleLeft != _viewFov.angleLeft || viewFov.angleRight != _viewFov.angleRight)
+        {
+            _hmdFov = hmdFov;
+            _viewFov = viewFov;
+
+            const float hmdleft = tanf(hmdFov.angleLeft);
+            const float hmdright = tanf(hmdFov.angleRight);
+            const float hmddown = tanf(hmdFov.angleDown);
+            const float hmdup = tanf(hmdFov.angleUp);
+
+            const float viewleft = tanf(viewFov.angleLeft);
+            const float viewright = tanf(viewFov.angleRight);
+            const float viewdown = tanf(viewFov.angleDown);
+            const float viewup = tanf(viewFov.angleUp);
+
+            // Modified FOV handling
+            _fovVertRatio = ((hmddown / viewdown) + (hmdup / viewup)) / 2.f;
+            _fovHorizRatio = ((hmdleft / viewleft) + (hmdright / viewright)) / 2.f;
+        }
+    }
+
     void D3D11Mirror::copyPerspectiveTex(const XrRect2Di & imgRect, 
                                          const DXGI_FORMAT format, 
                                          const XrSwapchain & swapchain) {
@@ -678,13 +1055,22 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
         }
     }
 
-    void D3D11Mirror::checkCopyTex(const uint32_t width, 
+    void D3D11Mirror::checkCopyTex(const uint32_t srcWidth, 
                                    const uint32_t height, 
                                    const DXGI_FORMAT format) {
+
+        float separation = 0.0f;
+
+        if (_pMirrorSurfaceData->eyeIndex == 2) {
+            separation = _pMirrorSurfaceData->overlap / 100.0f;
+        }
+
+        uint32_t targetWidth = static_cast<uint32_t>(srcWidth * (1.0f + separation));
+        targetWidth = targetWidth + (targetWidth % 2);
         if (_compositorTexture) {
             D3D11_TEXTURE2D_DESC srcDesc;
             _compositorTexture->GetDesc(&srcDesc);
-            if (srcDesc.Width != width || srcDesc.Height != height) {
+            if (srcDesc.Width != targetWidth || srcDesc.Height != height) {
                 _compositorTexture = nullptr;
                 _mirrorTextures.clear();
             }
@@ -700,7 +1086,7 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
 
             D3D11_TEXTURE2D_DESC desc;
             ZeroMemory(&desc, sizeof(desc));
-            desc.Width = width;
+            desc.Width = targetWidth;
             desc.Height = height;
             desc.MipLevels = 1;
             desc.ArraySize = 1;

@@ -22,6 +22,8 @@
 
 #pragma once
 
+#define NOMINMAX
+
 // Standard library.
 #include <algorithm>
 #include <cstdarg>
