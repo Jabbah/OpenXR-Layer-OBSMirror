@@ -103,6 +103,7 @@ namespace Mirror
         D3D11_MAPPED_SUBRESOURCE _mappedQuadBlendBuffer{};
 
         ComPtr<ID3D11Texture2D> _compositorTexture = nullptr;
+        D3D11_TEXTURE2D_DESC _comp_desc{};
         std::vector<ComPtr<ID3D11Texture2D>> _mirrorTextures;
 
         uint32_t _frameCounter = 0;

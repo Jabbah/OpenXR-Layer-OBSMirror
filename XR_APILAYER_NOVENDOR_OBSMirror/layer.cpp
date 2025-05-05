@@ -147,7 +147,6 @@ namespace {
             Session newSession;
             bool handled = true;
 
-            // if (isSystemHandled(createInfo->systemId)) {
             const XrBaseInStructure* const* pprev =
                 reinterpret_cast<const XrBaseInStructure* const*>(&createInfo->next);
             const XrBaseInStructure* entry = reinterpret_cast<const XrBaseInStructure*>(createInfo->next);
@@ -171,6 +170,7 @@ namespace {
                     _d3d12Device = d3d12Bindings->device;
                     _d3d12CommandQueue = d3d12Bindings->queue;
                 } else {
+                    Log("Unhandled graphics API type: %d\n", entry->type);
                     _xrGraphicsAPI = XR_TYPE_UNKNOWN;
                 }
 
@@ -334,6 +334,7 @@ namespace {
                         swapchainState._createInfo.mipCount);
 #endif
                     if (_xrGraphicsAPI == XR_TYPE_GRAPHICS_BINDING_D3D11_KHR) {
+                        Log("XR_TYPE_GRAPHICS_BINDING_D3D11_KHR\n");
                         swapchainState._dx11SurfaceImages.resize(*imageCountOutput);
                         for (uint32_t i = 0; i < *imageCountOutput; ++i) {
                             swapchainState._dx11SurfaceImages[i] =
@@ -371,6 +372,7 @@ namespace {
                             _mirror->createSharedMirrorTexture(swapchain, swapchainState._dx11LastTexture, desc.Format);
                         }
                     } else if (_xrGraphicsAPI == XR_TYPE_GRAPHICS_BINDING_D3D12_KHR) {
+                        Log("XR_TYPE_GRAPHICS_BINDING_D3D12_KHR\n");
                         for (auto event : swapchainState._frameFenceEvents) {
                             CloseHandle(event);
                         }
@@ -503,7 +505,7 @@ namespace {
 
         XrResult updateSwapChainImages(XrSwapchain swapchain, const XrSwapchainImageReleaseInfo* releaseInfo, bool doXRcall) {
             if (_mirror && _mirror->enabled() && isSwapchainHandled(swapchain)) {
-                auto& swapchainState = _swapchains[swapchain];
+                Swapchain& swapchainState = _swapchains[swapchain];
                 uint32_t idx = swapchainState._aquiredIndex;
                 if (_xrGraphicsAPI == XR_TYPE_GRAPHICS_BINDING_D3D11_KHR &&
                     !swapchainState._dx11SurfaceImages.empty()) {
@@ -563,9 +565,10 @@ namespace {
 
             if (_mirror && _mirror->enabled() && XR_SUCCEEDED(res)) {
                 auto siPtr = _mirror->getSpaceInfo(viewLocateInfo->space);
-                if (siPtr && siPtr->referenceSpaceType == XR_REFERENCE_SPACE_TYPE_LOCAL) {
-                    if (_projectionViews.size() != *viewCountOutput)
+                if (views && siPtr && (siPtr->referenceSpaceType == XR_REFERENCE_SPACE_TYPE_LOCAL || siPtr->referenceSpaceType == XR_REFERENCE_SPACE_TYPE_VIEW)) {
+                    if (_projectionViews.size() != *viewCountOutput) {
                         _projectionViews.resize(*viewCountOutput, {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW});
+                    }
                     for (uint32_t nView = 0; nView < *viewCountOutput; nView++) {
                         _projectionViews[nView].fov = views[nView].fov;
 
