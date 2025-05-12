@@ -107,14 +107,15 @@ namespace Mirror {
     struct quad_blend_buffer_t {
         float blendStartX;   // Corresponds to HLSL variable
         float blendEndX;     // Corresponds to HLSL variable
-        XMFLOAT2 padding_ps; // Ensure 16-byte alignment (float+float = 8 bytes, need 8 more)
+        float alphaOverride;
+        float padding_ps; // Ensure 16-byte alignment (float+float = 8 bytes, need 8 more)
     };
 
     struct quad_array_blend_buffer_t {
         float blendStartX;   // Corresponds to HLSL variable
         float blendEndX;     // Corresponds to HLSL variable
         float texIndex;
-        float padding_ps; // Ensure 16-byte alignment (float+float = 8 bytes, need 8 more)
+        float alphaOverride; // Ensure 16-byte alignment (float+float = 8 bytes, need 8 more)
     };
 
     constexpr char quad_vs_code[] = R"_(
@@ -151,7 +152,8 @@ cbuffer PSConstants : register(b1) // Use a different register for PS constants
     // in normalized texture coordinates (UV space) of the quad.
     float blendStartX;
     float blendEndX;
-    float2 padding_ps; // Ensure 16-byte alignment
+    float alphaOverride;
+    float padding_ps; // Ensure 16-byte alignment
 };
 
 Texture2D shaderTexture : register(t0);
@@ -174,7 +176,7 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
 
     // Modulate the texture's alpha component by the calculated horizontal blend factor.
     // The blend state will then use this resulting alpha.
-    textureColor.a *= horizontalBlend;
+    textureColor.a = (1.0 - alphaOverride) * horizontalBlend * textureColor.a + alphaOverride * horizontalBlend;
 
 	return textureColor;
 }
@@ -189,7 +191,7 @@ cbuffer PSConstants : register(b1) // Use a different register for PS constants
     float blendStartX;
     float blendEndX;
     float texIndex;
-    float padding_ps; // Ensure 16-byte alignment
+    float alphaOverride;
 };
 
 Texture2DArray shaderTexture : register(t0);
@@ -214,7 +216,7 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
 
     // Modulate the texture's alpha component by the calculated horizontal blend factor.
     // The blend state will then use this resulting alpha.
-    textureColor.a *= horizontalBlend;
+    textureColor.a = (1.0 - alphaOverride) * horizontalBlend * textureColor.a + alphaOverride * horizontalBlend;
 
 	return textureColor;
 }
@@ -585,6 +587,7 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
         quad_blend_buffer_t psCB1;
         psCB1.blendStartX = 0.0f;
         psCB1.blendEndX = 0.0f;
+        psCB1.alphaOverride = 0.0f;
         CHECK_DX(_d3d11MirrorContext->Map(
             _quadConstantBlendBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &_mappedQuadBlendBuffer));
 
@@ -629,7 +632,8 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
         quad_transform_buffer_t transform_buffer;
         XMStoreFloat4x4(&transform_buffer.viewproj, XMMatrixTranspose(mat_view * mat_projection));
 
-        XMFLOAT4 scalingVector = {quad->size.width, quad->size.height, 1.f, 1.f};
+        XMFLOAT4 scalingVector = {
+            quad->size.width * ((float)view->subImage.imageRect.extent.width / (float)_comp_desc.Width), quad->size.height, 1.f, 1.f};
         XMMATRIX mat_model = XMMatrixAffineTransformation(XMLoadFloat4(&scalingVector),
                                                           DirectX::g_XMZero,
                                                           XMLoadFloat4((XMFLOAT4*)&quad->pose.orientation),
@@ -685,21 +689,8 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
             D3D11_TEXTURE2D_DESC srcDesc;
             srcTex->GetDesc(&srcDesc);
 
-            // Figure out what format we need to use
-            DxgiFormatInfo info = {};
-            if (!GetFormatInfo(srcDesc.Format, info)) {
-                Log("Unknown DXGI texture format %d\n", srcDesc.Format);
-            }
-            bool useLinearFormat = info.bpc > 8;
-            DXGI_FORMAT type = useLinearFormat ? info.linear : info.srgb;
-            D3D11_SHADER_RESOURCE_VIEW_DESC viewDesc;
-            viewDesc.Format = type;
-            viewDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-            viewDesc.Texture2D.MipLevels = 1;
-            viewDesc.Texture2D.MostDetailedMip = 0;
-
             _d3d11MirrorContext->PSSetConstantBuffers(1, 1, _quadConstantBlendBuffer.GetAddressOf());
-            _d3d11MirrorContext->PSSetShader(_quadPShader.Get(), nullptr, 0);
+            _d3d11MirrorContext->PSSetShader(_quadArrayPShader.Get(), nullptr, 0);
             _d3d11MirrorContext->PSSetSamplers(0, 1, _quadSampleState.GetAddressOf());
 
             CHECK_DX(_d3d11MirrorContext->Map(
@@ -731,9 +722,16 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
 
             _d3d11MirrorContext->Unmap(_quadVertexBuffer.Get(), 0);
 
-            quad_blend_buffer_t psCB1;
+            quad_array_blend_buffer_t psCB1;
             psCB1.blendStartX = 0.0f;
             psCB1.blendEndX = 0.0f;
+            psCB1.alphaOverride = 1.0f;
+
+            if (srcDesc.ArraySize > 1 && _pMirrorSurfaceData->eyeIndex == 1)
+                psCB1.texIndex = 1.0f;
+            else
+                psCB1.texIndex = 0.0f;
+
             CHECK_DX(_d3d11MirrorContext->Map(
                 _quadConstantBlendBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &_mappedQuadBlendBuffer));
 
@@ -767,25 +765,15 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
             checkFOVs(hmdFov, view->fov);
 
             // Set up camera matrices based on OpenXR's predicted viewpoint information
-            XMMATRIX mat_projection = d3dXrOrthoProjection(
-                static_cast<float>(rect.extent.width) * _fovHorizRatio, static_cast<float>(rect.extent.height) * _fovVertRatio, -1.0f, 1.0f);
+            XMMATRIX mat_projection = XMMatrixOrthographicLH(_fovHorizRatio, _fovVertRatio, 0.01f, 100.0f);
 
-            XMMATRIX mat_view =
-                XMMatrixInverse(nullptr,
-                                XMMatrixAffineTransformation(DirectX::g_XMOne,
-                                                             DirectX::g_XMZero,
-                                                             XMLoadFloat4((XMFLOAT4*)&view->pose.orientation),
-                                                             XMLoadFloat3((XMFLOAT3*)&view->pose.position)));
+            XMMATRIX mat_view = XMMatrixIdentity();
 
             // Put camera matrices into the shader's constant buffer
             quad_transform_buffer_t transform_buffer;
             XMStoreFloat4x4(&transform_buffer.viewproj, XMMatrixTranspose(mat_view * mat_projection));
 
-            XMFLOAT4 scalingVector = {static_cast<float>(rect.extent.width), static_cast<float>(rect.extent.height), 1.f, 1.f};
-            XMMATRIX mat_model = XMMatrixAffineTransformation(XMLoadFloat4(&scalingVector),
-                                                              DirectX::g_XMZero,
-                                                              XMLoadFloat4((XMFLOAT4*)&view->pose.orientation),
-                                                              XMLoadFloat3((XMFLOAT3*)&view->pose.position));
+            XMMATRIX mat_model = XMMatrixTranslation(0.0f, 0.0f, 0.5f);
 
             // Update the shader's constant buffer with the transform matrix info, and then draw the quad
             XMStoreFloat4x4(&transform_buffer.world, XMMatrixTranspose(mat_model));
@@ -805,13 +793,13 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
         if (it1 == _sourceData.end())
             return;
 
-        auto it2 = _sourceData.find(view2->subImage.swapchain);
-        if (it2 == _sourceData.end())
-            return;
-
         auto srcTex1 = it1->second._texture;
 
         if (!srcTex1)
+            return;
+
+        auto it2 = _sourceData.find(view2->subImage.swapchain);
+        if (it2 == _sourceData.end())
             return;
 
         auto srcTex2 = it2->second._texture;
@@ -826,9 +814,19 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
         if (_compositorTexture == nullptr || _mirrorTextures.size() == 0)
             return;
 
+        if (XMScalarNearEqual(hmdFov1.angleDown, view1->fov.angleDown, 0.001f) &&
+            XMScalarNearEqual(hmdFov1.angleUp, view1->fov.angleUp, 0.001f) &&
+            XMScalarNearEqual(hmdFov1.angleLeft, view1->fov.angleLeft, 0.001f) &&
+            XMScalarNearEqual(hmdFov1.angleRight, view1->fov.angleRight, 0.001f))
+        {
+            // If FOV is the same then use fast copy
+            copyPerspectiveTex(view1->subImage.imageRect, format, view1->subImage.swapchain);
+        }
+        else 
         {
             D3D11_TEXTURE2D_DESC srcDesc;
             srcTex1->GetDesc(&srcDesc);
+            Log("Array size: %d\n", srcDesc.ArraySize);
 
             _d3d11MirrorContext->PSSetConstantBuffers(1, 1, _quadConstantBlendBuffer.GetAddressOf());
             _d3d11MirrorContext->PSSetShader(_quadArrayPShader.Get(), nullptr, 0);
@@ -867,7 +865,9 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
             quad_array_blend_buffer_t psCB1;
             psCB1.blendStartX = 0.f;
             psCB1.blendEndX = 0.f;
-            psCB1.texIndex = 0.f;
+            psCB1.alphaOverride = 0.0f;
+            psCB1.texIndex = 0.0f;
+
             CHECK_DX(_d3d11MirrorContext->Map(
                 _quadConstantBlendBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &_mappedQuadBlendBuffer));
 
@@ -901,25 +901,15 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
             checkFOVs(hmdFov1, view1->fov);
 
             // Set up camera matrices based on OpenXR's predicted viewpoint information
-            XMMATRIX mat_projection = d3dXrOrthoProjection(
-                static_cast<float>(rect.extent.width) * _fovHorizRatio, static_cast<float>(rect.extent.height) * _fovVertRatio, -1.0f, 1.0f);
+            XMMATRIX mat_projection = XMMatrixOrthographicLH(_fovHorizRatio, _fovVertRatio, 0.01f, 100.0f);
 
-            XMMATRIX mat_view =
-                XMMatrixInverse(nullptr,
-                                XMMatrixAffineTransformation(DirectX::g_XMOne,
-                                                             DirectX::g_XMZero,
-                                                             XMLoadFloat4((XMFLOAT4*)&view1->pose.orientation),
-                                                             XMLoadFloat3((XMFLOAT3*)&view1->pose.position)));
+            XMMATRIX mat_view = XMMatrixIdentity();
 
             // Put camera matrices into the shader's constant buffer
             quad_transform_buffer_t transform_buffer;
             XMStoreFloat4x4(&transform_buffer.viewproj, XMMatrixTranspose(mat_view * mat_projection));
 
-            XMFLOAT4 scalingVector = {static_cast<float>(rect.extent.width), static_cast<float>(rect.extent.height), 1.f, 1.f};
-            XMMATRIX mat_model = XMMatrixAffineTransformation(XMLoadFloat4(&scalingVector),
-                                                              DirectX::g_XMZero,
-                                                              XMLoadFloat4((XMFLOAT4*)&view1->pose.orientation),
-                                                              XMLoadFloat3((XMFLOAT3*)&view1->pose.position));
+            XMMATRIX mat_model = XMMatrixTranslation(0.0f, 0.0f, 0.5f);
 
             // Update the shader's constant buffer with the transform matrix info, and then draw the quad
             XMStoreFloat4x4(&transform_buffer.world, XMMatrixTranspose(mat_model));
@@ -932,6 +922,8 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
         {
             D3D11_TEXTURE2D_DESC srcDesc;
             srcTex2->GetDesc(&srcDesc);
+            D3D11_TEXTURE2D_DESC compDesc;
+            _compositorTexture->GetDesc(&compDesc);
 
             _d3d11MirrorContext->PSSetConstantBuffers(1, 1, _quadConstantBlendBuffer.GetAddressOf());
             _d3d11MirrorContext->PSSetShader(_quadArrayPShader.Get(), nullptr, 0);
@@ -979,6 +971,8 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
             else
                 psCB1.texIndex = 0.0f;
 
+            psCB1.alphaOverride = 1.0f;
+
             CHECK_DX(_d3d11MirrorContext->Map(
                 _quadConstantBlendBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &_mappedQuadBlendBuffer));
 
@@ -988,6 +982,9 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
             auto quadTextureView = it2->second._quadTextureView;
 
             _d3d11MirrorContext->PSSetShaderResources(0, 1, quadTextureView.GetAddressOf());
+
+            float blend_factor[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+            _d3d11MirrorContext->OMSetBlendState(_quadBlendState.Get(), blend_factor, 0xffffffff);
 
             // Modify the view port and scissor for offset eye rendering
             XrRect2Di rect = {{0, 0}, view2->subImage.imageRect.extent};
@@ -1008,25 +1005,15 @@ float4 ps_quad(psIn inputPS) : SV_TARGET
             _d3d11MirrorContext->OMSetRenderTargets(1, _targetView.GetAddressOf(), nullptr);
 
             // Set up camera matrices based on OpenXR's predicted viewpoint information
-            XMMATRIX mat_projection = d3dXrOrthoProjection(
-                static_cast<float>(rect.extent.width) * _fovHorizRatio, static_cast<float>(rect.extent.height) * _fovVertRatio, -1.0f, 1.0f);
+            XMMATRIX mat_projection = XMMatrixOrthographicLH(_fovHorizRatio, _fovVertRatio, 0.01f, 100.0f);
 
-            XMMATRIX mat_view =
-                XMMatrixInverse(nullptr,
-                                XMMatrixAffineTransformation(DirectX::g_XMOne,
-                                                             DirectX::g_XMZero,
-                                                             XMLoadFloat4((XMFLOAT4*)&view2->pose.orientation),
-                                                             XMLoadFloat3((XMFLOAT3*)&view2->pose.position)));
+            XMMATRIX mat_view = XMMatrixIdentity();
 
             // Put camera matrices into the shader's constant buffer
             quad_transform_buffer_t transform_buffer;
             XMStoreFloat4x4(&transform_buffer.viewproj, XMMatrixTranspose(mat_view * mat_projection));
 
-            XMFLOAT4 scalingVector = {static_cast<float>(rect.extent.width), static_cast<float>(rect.extent.height), 1.f, 1.f};
-            XMMATRIX mat_model = XMMatrixAffineTransformation(XMLoadFloat4(&scalingVector),
-                                                              DirectX::g_XMZero,
-                                                              XMLoadFloat4((XMFLOAT4*)&view2->pose.orientation),
-                                                              XMLoadFloat3((XMFLOAT3*)&view2->pose.position));
+            XMMATRIX mat_model = XMMatrixTranslation(0.0f, 0.0f, 0.5f);
 
             // Update the shader's constant buffer with the transform matrix info, and then draw the quad
             XMStoreFloat4x4(&transform_buffer.world, XMMatrixTranspose(mat_model));
