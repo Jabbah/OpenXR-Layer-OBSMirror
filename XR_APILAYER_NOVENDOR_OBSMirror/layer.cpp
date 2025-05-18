@@ -565,8 +565,9 @@ namespace {
 
             if (_mirror && _mirror->enabled() && XR_SUCCEEDED(res)) {
                 auto siPtr = _mirror->getSpaceInfo(viewLocateInfo->space);
-                if (views && siPtr && (siPtr->referenceSpaceType == XR_REFERENCE_SPACE_TYPE_LOCAL || siPtr->referenceSpaceType == XR_REFERENCE_SPACE_TYPE_VIEW)) {
+                if (views && siPtr) {
                     if (_projectionViews.size() != *viewCountOutput) {
+                        Log("Reference Space Type: %d", siPtr->referenceSpaceType);
                         _projectionViews.resize(*viewCountOutput, {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW});
                     }
                     for (uint32_t nView = 0; nView < *viewCountOutput; nView++) {
