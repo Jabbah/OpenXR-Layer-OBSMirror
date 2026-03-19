@@ -47,6 +47,9 @@ struct MirrorSurfaceData {
 	uint32_t lastProcessedIndex = 0;
 	uint32_t frameNumber = 0;
 	uint32_t eyeIndex = 0;
+	float overlap = 50;
+	float blend = 10;
+	float blendPos = 10;
 	HANDLE sharedHandle[3] = {NULL};
 
 	void reset()
@@ -75,9 +78,13 @@ std::vector<croppreset> croppresets;
 struct win_openxrmirror {
 	obs_source_t *source;
 
-	bool righteye;
+	int captureeye = 1; // left = 0, right = 1, both = 2
 	int croppreset;
 	crop crop;
+
+	float blend = 0.0f;
+	float blendPos = 0.0f;
+	float overlap = 0.0f;
 
 	gs_texture_t *texture = nullptr;
 	winrt::com_ptr<ID3D11Device> dev11 = nullptr;
@@ -273,7 +280,10 @@ static void win_openxrmirror_init(void *data, bool forced = false)
 		return;
 	}
 
-	pMirrorSurfaceData->eyeIndex = context->righteye ? 1 : 0;
+	pMirrorSurfaceData->eyeIndex = context->captureeye;
+	pMirrorSurfaceData->blend = context->blend;
+	pMirrorSurfaceData->blendPos = context->blendPos;
+	pMirrorSurfaceData->overlap = context->overlap;
 
 	HRESULT hr;
 	D3D_FEATURE_LEVEL featureLevel[] = {D3D_FEATURE_LEVEL_11_1,
@@ -400,9 +410,9 @@ static const char *win_openxrmirror_get_name(void *unused)
 static void win_openxrmirror_update(void *data, obs_data_t *settings)
 {
 	struct win_openxrmirror *context = (win_openxrmirror *)data;
-	context->righteye = obs_data_get_bool(settings, "righteye");
+	context->captureeye = static_cast<int>(obs_data_get_int(settings, "captureeye"));
 
-	if (context->righteye) {
+	if (context->captureeye == 1) {
 		context->crop.left = obs_data_get_double(settings, "cropleft");
 		context->crop.right = obs_data_get_double(settings, "cropright");
 	} else {
@@ -412,6 +422,11 @@ static void win_openxrmirror_update(void *data, obs_data_t *settings)
 	context->crop.top = obs_data_get_double(settings, "croptop");
 	context->crop.bottom = obs_data_get_double(settings, "cropbottom");
 
+	context->overlap = static_cast<float>(obs_data_get_double(settings, "eyeoverlap"));
+	context->blend = static_cast<float>(obs_data_get_double(settings, "eyeblend"));
+	context->blendPos =
+		static_cast<float>(obs_data_get_double(settings, "eyeblendpos"));
+
 	if (context->initialized) {
 		win_openxrmirror_deinit(data);
 		win_openxrmirror_init(data);
@@ -420,7 +435,10 @@ static void win_openxrmirror_update(void *data, obs_data_t *settings)
 
 static void win_openxrmirror_defaults(obs_data_t *settings)
 {
-	obs_data_set_default_bool(settings, "righteye", true);
+	obs_data_set_default_int(settings, "captureeye", 1);
+	obs_data_set_default_double(settings, "eyeoverlap", 50);
+	obs_data_set_default_double(settings, "eyeblend", 50);
+	obs_data_set_default_double(settings, "eyeblendpos", 50);
 	obs_data_set_default_double(settings, "cropleft", 0);
 	obs_data_set_default_double(settings, "cropright", 0);
 	obs_data_set_default_double(settings, "croptop", 0);
@@ -561,9 +579,6 @@ static bool crop_preset_changed(obs_properties_t *props, obs_property_t *p,
 	if (sel >= croppresets.size() || sel < 0)
 		return false;
 
-	//bool flip = obs_data_get_bool(s, "righteye");
-
-	// Mirror preset horizontally if right eye is captured
 	const crop &crop = croppresets[sel].crop;
 	obs_data_set_double(s, "cropleft", std::clamp(crop.left, 0.0, 100.0));
 	obs_data_set_double(s, "cropright", std::clamp(crop.right, 0.0, 100.0));
@@ -590,7 +605,7 @@ static bool crop_preset_manual(obs_properties_t *props, obs_property_t *p,
 static bool crop_preset_flip(obs_properties_t *props, obs_property_t *p,
 			     obs_data_t *s)
 {
-	bool flip = obs_data_get_bool(s, "righteye");
+	bool flip = obs_data_get_int(s, "captureeye") == 1;
 	obs_property_set_description(obs_properties_get(props, "cropleft"),
 		flip ? obs_module_text("Crop Left Percentage")
 		     : obs_module_text("Crop Right Percentage"));
@@ -622,9 +637,27 @@ static obs_properties_t *win_openxrmirror_properties(void *data)
 	obs_properties_t *props = obs_properties_create();
 	obs_property_t *p;
 
-	p = obs_properties_add_bool(props, "righteye",
-				    obs_module_text("Right Eye"));
+	p = obs_properties_add_list(props, "captureeye",
+				    obs_module_text("Eye Capture"),
+				    OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+
+	obs_property_list_add_int(p, "Left", 0);
+	obs_property_list_add_int(p, "Right", 1);
+	obs_property_list_add_int(p, "Both", 2);
+
 	obs_property_set_modified_callback(p, crop_preset_flip);
+
+	p = obs_properties_add_float_slider(props, "eyeoverlap",
+					    obs_module_text("Eye Overlap"), 0.0,
+					    100.0, 0.1);
+
+	p = obs_properties_add_float_slider(props, "eyeblend",
+					    obs_module_text("Eye Blend"), 0.0,
+					    100.0, 0.1);
+
+	p = obs_properties_add_float_slider(props, "eyeblendpos",
+					    obs_module_text("Eye Blend Pos"), 0.0,
+					    100.0, 0.1);
 
 	p = obs_properties_add_list(props, "croppreset",
 				    obs_module_text("Preset"),
